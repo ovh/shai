@@ -33,6 +33,18 @@ impl OpenAICompatibleProvider {
             _ => None
         }
     }
+
+    fn adjust_response_tokens(&self, mut response: ChatCompletionResponse) -> ChatCompletionResponse {
+        if let Some(ref mut usage) = response.usage {
+            if let Some(details) = &usage.completion_tokens_details {
+                let reasoning_tokens = details.reasoning_tokens;
+                if let Some(completion) = usage.completion_tokens {
+                    usage.completion_tokens = Some(completion.saturating_sub(reasoning_tokens));
+                }
+            }
+        }
+        response
+    }
 }
 
 #[async_trait]
@@ -44,10 +56,10 @@ impl LlmProvider for OpenAICompatibleProvider {
     }
 
     async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {
-        let mut response = self.client.chat().create(request).await
+        let response = self.client.chat().create(request).await
             .map_err(|e| Box::new(e) as LlmError)?;
 
-        Ok(response)
+        Ok(self.adjust_response_tokens(response))
     }
 
     async fn chat_stream(&self, mut request: ChatCompletionParameters) -> Result<LlmStream, LlmError> {

@@ -8,8 +8,10 @@ use tracing::debug;
 use crate::agent::brain::ThinkerDecision;
 use crate::agent::{Agent, AgentBuilder, AgentError, Brain, ThinkerContext};
 use crate::tools::types::{ContainsAnyTool, IntoToolBox};
-use shai_llm::tool::LlmToolCall;
+use shai_llm::tool::{LlmToolCall, get_max_context};
 use crate::tools::{AnyTool, BashTool, EditTool, FetchTool, FindTool, LsTool, MultiEditTool, ReadTool, TodoReadTool, TodoWriteTool, WriteTool, TodoStorage, FsOperationLog};
+use crate::runners::compacter::ContextCompressor;
+use crate::config::config::ShaiConfig;
 
 use super::prompt::{render_system_prompt_template, get_todo_read};
 
@@ -19,26 +21,61 @@ pub struct CoderBrain {
     pub model: String,
     pub system_prompt_template: String,
     pub temperature: f32,
+    pub context_compressor: Option<ContextCompressor>,
 }
 
 impl CoderBrain {
     pub fn new(llm: Arc<LlmClient>, model: String) -> Self {
         debug!(target: "brain::coder", provider =?llm.provider_name(), model = ?model);
-        Self { 
-            llm, 
+
+        // Try to get context limit from configuration
+        let context_compressor = if let Ok(config) = ShaiConfig::load() {
+            if let Some(provider_config) = config.get_selected_provider() {
+                {
+                    let max_tokens = get_max_context(&provider_config.model) as u32;
+                    debug!(target: "brain::coder", max_context_tokens = max_tokens, "Initializing context compressor with AI summarization");
+                    Some(ContextCompressor::new_with_llm(max_tokens, llm.clone(), model.clone()))
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Self {
+            llm,
             model,
             system_prompt_template: "{{CODER_BASE_PROMPT}}".to_string(),
             temperature: 0.3,
+            context_compressor,
         }
     }
 
     pub fn with_custom_prompt(llm: Arc<LlmClient>, model: String, system_prompt_template: String, temperature: f32) -> Self {
         debug!(target: "brain::coder", provider =?llm.provider_name(), model = ?model);
-        Self { 
-            llm, 
+
+        // Try to get context limit from configuration
+        let context_compressor = if let Ok(config) = ShaiConfig::load() {
+            if let Some(provider_config) = config.get_selected_provider() {
+                {
+                    let max_tokens = get_max_context(&provider_config.model) as u32;
+                    debug!(target: "brain::coder", max_context_tokens = max_tokens, "Initializing context compressor with AI summarization");
+                    Some(ContextCompressor::new_with_llm(max_tokens, llm.clone(), model.clone()))
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Self {
+            llm,
             model,
             system_prompt_template,
             temperature,
+            context_compressor,
         }
     }
 }
@@ -51,7 +88,7 @@ impl Brain for CoderBrain {
 
         // Render the user's system prompt template
         let mut system_prompt = render_system_prompt_template(&self.system_prompt_template);
-        
+
         // Add todo status if available
         if let Some(tool) = context.available_tools.get_tool("todo_read") {
             let todo_status = get_todo_read(&tool).await;
@@ -62,6 +99,8 @@ impl Brain for CoderBrain {
             content: ChatMessageContent::Text(system_prompt),
             name: None,
         });
+
+        // Note: Context compression is now handled when tasks complete, not during thinking
 
         // get next step with custom temperature
         let request = ChatCompletionParametersBuilder::default()
@@ -79,11 +118,31 @@ impl Brain for CoderBrain {
                 .map_err(|e| AgentError::LlmError(e.to_string()))?;
 
         // Extract token usage information
-        let token_usage = brain_decision.usage.as_ref().map(|usage| {
+        let token_usage = if let Some(usage) = &brain_decision.usage {
             let input = usage.prompt_tokens.unwrap_or(0);
             let output = usage.completion_tokens.unwrap_or(0);
-            (input, output)
-        });
+            debug!(target: "brain::coder::tokens",
+                input_tokens = input,
+                output_tokens = output,
+                total_tokens = usage.total_tokens,
+                "Token usage for LLM call"
+            );
+            // Update context compressor with token usage
+            if let Some(compressor) = &mut self.context_compressor {
+                compressor.update_token_count(input, output);
+                if compressor.is_near_limit() {
+                    debug!(target: "brain::coder::context",
+                        current_tokens = compressor.get_current_tokens(),
+                        max_tokens = compressor.get_max_tokens(),
+                        "Approaching context limit"
+                    );
+                }
+            }
+
+            Some((input, output))
+        } else {
+            None
+        };
 
         // stop here if there's no other tool calls
         let message = brain_decision.choices.into_iter().next().unwrap().message;

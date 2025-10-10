@@ -56,6 +56,22 @@ impl FileEventLogger {
             AgentEvent::TokenUsage { input_tokens, output_tokens } => {
                 format!("Token Usage: input={} output={} total={}", input_tokens, output_tokens, input_tokens + output_tokens)
             }
+            AgentEvent::ContextCompressed { original_message_count, compressed_message_count, tokens_before, current_tokens, max_tokens, ai_summary } => {
+                let summary_text = if let Some(summary) = ai_summary {
+                    format!(" | Summary: {}", summary)
+                } else {
+                    "".to_string()
+                };
+
+                let token_info = match (tokens_before, current_tokens) {
+                    (Some(before), Some(after)) => format!(", tokens: {} → {}", before, after),
+                    (Some(before), None) => format!(", tokens before: {}", before),
+                    _ => "".to_string(),
+                };
+
+                format!("Context Compressed with AI Summary: {} → {} messages{}{}",
+                    original_message_count, compressed_message_count, token_info, summary_text)
+            }
         };
 
         let log_line = format!("[{}] {}\n", timestamp.format("%Y-%m-%d %H:%M:%S%.3f"), event_str);

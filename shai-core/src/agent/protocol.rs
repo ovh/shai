@@ -40,6 +40,8 @@ pub enum AgentRequest {
     /// Drop controller IO, this closes it for all controller.
     /// Once this is done, it cannot be reopen!
     Droping,
+    /// Trigger context compression manually
+    TriggerContextCompression,
 }
 
 /// Commands that can be sent to a running agent
@@ -173,5 +175,10 @@ impl AgentController {
             AgentResponse::SudoStatus { enabled } => Ok(enabled),
             _ => Err(AgentError::InvalidResponse("Expected SudoStatus response".to_string()))
         }
+    }
+
+    /// Trigger context compression manually
+    pub async fn trigger_context_compression(&self) -> Result<(), AgentError> {
+        self.send(AgentRequest::TriggerContextCompression).await.map(|_| Ok(()))?
     }
 }

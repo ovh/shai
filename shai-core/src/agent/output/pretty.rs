@@ -114,6 +114,47 @@ impl PrettyFormatter {
                 // Don't display token usage in the main output - it's handled by /tokens command
                 None
             },
+            AgentEvent::ContextCompressed { original_message_count, compressed_message_count, tokens_before, current_tokens, max_tokens, ai_summary } => {
+                let net_change = if original_message_count > compressed_message_count {
+                    original_message_count - compressed_message_count
+                } else {
+                    0
+                };
+
+                let markdown = match (tokens_before, current_tokens) {
+                    (Some(before), Some(after)) => {
+                        if net_change > 0 {
+                            format!(
+                                "● **Context Compressed with AI Summary** - Summarized {} message(s) to stay within token limits ({} → {} tokens)",
+                                net_change, before, after
+                            )
+                        } else {
+                            format!(
+                                "● **Context Compression Applied** - Added AI summary to optimize token usage ({} → {} tokens)",
+                                before, after
+                            )
+                        }
+                    }
+                    _ => {
+                        if net_change > 0 {
+                            format!(
+                                "● **Context Compressed with AI Summary** - Summarized {} message(s) to stay within token limits",
+                                net_change
+                            )
+                        } else {
+                            format!(
+                                "● **Context Compression Applied** - Added AI summary to optimize token usage"
+                            )
+                        }
+                    }
+                };
+
+                let mut compression_skin = self.skin.clone();
+                compression_skin.paragraph.set_fg(rgb(100, 200, 255)); // Blue for AI compression
+                compression_skin.bold.set_fg(rgb(120, 220, 255)); // Light blue for bold
+
+                Some(compression_skin.term_text(&markdown).to_string())
+            },
         }.map(|s| format!("\n{}", s))
     }
 
@@ -211,7 +252,7 @@ impl PrettyFormatter {
                     }
                     
                     // Show first N lines for user display only for specific tools
-                    if matches!(call.tool_name.as_str(), "ls" | "bash" | "edit" | "multiedit" | "find" | "todo_read" | "todo_write") {
+                    if matches!(call.tool_name.as_str(), "ls" | "bash" | "edit" | "multiedit" | "search" | "todo_read" | "todo_write") {
                         let preview_lines: Vec<&str> = tool_output.lines().take(self.max_preview_lines).collect();
                         if !preview_lines.is_empty() {
                             let mut markdown_content = String::new();
@@ -250,7 +291,7 @@ impl PrettyFormatter {
             let param_names = match tool_name {
                 "read" | "write" | "edit" | "multiedit" => vec!["file_path", "path"],
                 "ls" | "glob" => vec!["path", "pattern"],
-                "find" | "grep" => vec!["pattern", "path"],
+                "search" | "grep" => vec!["pattern", "path"],
                 "bash" => vec!["command"],
                 _ => vec!["path", "file_path", "pattern", "command", "query", "input"]
             };

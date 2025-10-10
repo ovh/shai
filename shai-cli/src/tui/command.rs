@@ -10,6 +10,7 @@ impl App<'_> {
             (("/auth","select a provider"), vec![]),
             (("/tc","set the tool call method: [fc | fc2 | so]"), vec!["method"]),
             (("/tokens","display token usage (input/output)"), vec![]),
+            (("/compact","trigger context compaction"), vec![]),
         ])
         .into_iter()
         .map(|((cmd,desc),args)|((cmd.to_string(),desc.to_string()),args.into_iter().map(|s|s.to_string()).collect()))
@@ -64,6 +65,12 @@ impl App<'_> {
                     self.total_input_tokens + self.total_output_tokens
                 );
                 self.input.alert_msg(&msg, Duration::from_secs(5));
+            }
+            "/compact" => {
+                if let Some(ref agent) = self.agent {
+                    let _ = agent.controller.trigger_context_compression().await;
+                    self.input.alert_msg("Context compression triggered", Duration::from_secs(2));
+                }
             }
             _ => {
                 self.input.alert_msg("command unknown", Duration::from_secs(1));

@@ -22,6 +22,7 @@ use shai_core::logging::LoggingConfig;
 use shai_core::runners::coder::coder::coder;
 use shai_core::tools::{ToolCall, ToolResult};
 use shai_llm::{LlmClient, ToolCallMethod};
+use shai_llm::tool::max_context::get_max_context;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
@@ -72,6 +73,8 @@ pub struct App<'a> {
 
     pub(crate) total_input_tokens: u32,
     pub(crate) total_output_tokens: u32,
+    pub(crate) current_tokens: usize,
+    pub(crate) max_context: usize,
 }
 
 
@@ -83,6 +86,7 @@ impl App<'_> {
             let config = AgentConfig::load(agent_name)?;
             
             println!("\x1b[2m░ agent {} - {} on {}\x1b[0m", agent_name, config.llm_provider.model, config.llm_provider.provider);
+            self.max_context = get_max_context(&config.llm_provider.model);
             
             // Create agent from config
             let agent_builder = AgentBuilder::from_config(config).await?;
@@ -91,7 +95,7 @@ impl App<'_> {
             // Use default coder agent
             let (llm, model) = ShaiConfig::get_llm().await?;
             println!("\x1b[2m░ {} on {}\x1b[0m", model, llm.provider().name());
-            
+            self.max_context = get_max_context(&model);
             Box::new(coder(Arc::new(llm), model))
         };
         
@@ -158,6 +162,13 @@ impl App<'_> {
         if let AgentEvent::TokenUsage { input_tokens, output_tokens } = &event {
             self.total_input_tokens += input_tokens;
             self.total_output_tokens += output_tokens;
+            self.current_tokens += (input_tokens + output_tokens) as usize;
+        }
+        // Update current_tokens after context compression
+        if let AgentEvent::ContextCompressed { current_tokens, .. } = &event {
+            if let Some(ct) = current_tokens {
+                self.current_tokens = *ct as usize;
+            }
         }
         
         Ok(())
@@ -182,6 +193,8 @@ impl App<'_> {
             permission_queue: VecDeque::new(),
             total_input_tokens: 0,
             total_output_tokens: 0,
+            current_tokens: 0,
+            max_context: 0,
         }
     }
 
@@ -385,7 +398,7 @@ impl App<'_> {
             AppModalState::PermissionModal { widget } => widget.height(),
         }.max(5);
         let height = modal_height
-        + 1 
+        + 2 
         + self.running_tools.len() as u16;
 
         if let Some(ref mut terminal) = self.terminal {  
@@ -395,11 +408,13 @@ impl App<'_> {
             }
 
             terminal.draw(|frame| {                    
-                let [_, inprogress, modal] = Layout::vertical([
+                let [_, inprogress, modal, ctx_line] = Layout::vertical([
                     Constraint::Length(1), // padding
                     Constraint::Length(self.running_tools.len() as u16 + 1), // running tool (if any)
-                    Constraint::Length(modal_height)])                // input or modal
-                    .areas(frame.area()); 
+                    Constraint::Length(modal_height),
+                    Constraint::Length(1)
+                ]).areas(frame.area());
+            
 
                 // draw running tool
                 if !self.running_tools.is_empty() {
@@ -417,6 +432,14 @@ impl App<'_> {
                     AppModalState::PermissionModal { widget } => {
                         widget.draw(frame, modal)
                     }
+                }
+                // Render context usage line
+                if self.max_context > 0 {
+                    let used = self.current_tokens;
+                    let remaining = if used > self.max_context { 0 } else { self.max_context - used };
+                    let percent = (remaining as f64 / self.max_context as f64) * 100.0;
+                    let ctx_text = format!("Context: {:.1}% remaining", percent);
+                    frame.render_widget(Span::styled(ctx_text, Style::default().fg(Color::DarkGray)), ctx_line);
                 }
             })?;
         }

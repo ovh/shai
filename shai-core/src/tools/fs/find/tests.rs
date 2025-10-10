@@ -9,7 +9,7 @@ use std::fs;
 #[tokio::test]
 async fn test_find_tool_creation() {
     let tool = FindTool::new();
-    assert_eq!(&tool.name(), "find");
+    assert_eq!(&tool.name(), "search");
     assert!(!tool.description().is_empty());
 }
 

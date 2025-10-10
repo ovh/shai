@@ -29,6 +29,50 @@ the `shai` binary will be installed in `$HOME/.local/bin`
 
 ## Configure a provider and Run!
 
+### Configuration files
+
+Shai can be configured via **configuration files** written in JSON. By default, the configuration file is `auth.config` located in `~/.config/shai/`. The file defines the list of LLM providers, the selected provider, model, and tool call method.
+
+#### Example `.shai.config`
+```json
+{
+  "providers": [
+    {
+      "provider": "ovhcloud",
+      "env_vars": {
+        "OVH_BASE_URL": "https://gpt-oss-120b.endpoints.kepler.ai.cloud.ovh.net/api/openai_compat/v1"
+      },
+      "model": "gpt-oss-120b",
+      "tool_method": "FunctionCall",
+      "max_context_tokens": 8192
+    }
+  ],
+  "selected_provider": 0
+}
+```
+
+- **providers**: an array of provider definitions. Each provider can specify environment variables (`env_vars`), the model name, the tool call method (`FunctionCall` or `Chat`), and optionally `max_context_tokens` to limit the context size.
+- **selected_provider**: the index of the provider to use (starting at `0`).
+- **max_context_tokens** (optional, per provider): maximum number of tokens that can be sent in the context to the LLM. If omitted, the default for the model is used.
+
+You can create multiple configuration files for different agents (see the *Custom Agent* section). To use a specific configuration, place the file in `~/.config/shai/agents/` and run the agent by its filename (without the `.config` extension):
+```
+shai my_custom_agent
+```
+
+Shai will automatically load the configuration, set the required environment variables, and use the selected provider for all subsequent interactions.
+
+### Using the configuration
+
+- **Automatic loading**: If a `.shai.config` file is present in the current directory, Shai will load it automatically.
+- **Explicit loading**: Use the `--config <path>` flag to specify a custom configuration file:
+```
+shai --config ~/.config/shai/agents/example.config
+```
+
+The configuration system allows you to switch providers, models, or tool call methods without recompiling the binary.
+
+
 By default `shai` uses OVHcloud as an anonymous user meaning you will be rate limited! If you want to sign in with your account or select another provider, run:
 
 ```

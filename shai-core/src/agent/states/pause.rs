@@ -8,6 +8,10 @@ impl AgentCore {
                 // Silently ignore
                 Ok(())
             }
+            InternalAgentEvent::ManualCompressionRequested => {
+                // Trigger manual context compression
+                self.check_and_compress_context_manual().await
+            }
             _ => {
                 // Paused state: All other events are illegal until user send something
                 // ignore all events but log error

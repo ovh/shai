@@ -110,7 +110,7 @@ impl FindTool {
     }
 }
 
-#[tool(name = "find", description = r#"A high-performance search utility for locating files or specific text within files across the project.
+#[tool(name = "search", description = r#"A high-performance search utility for locating files or specific text within files across the project.
 
 **Core Functionality:**
 - Employs regular expressions for powerful content searches, allowing for complex pattern matching.

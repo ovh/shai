@@ -49,7 +49,8 @@ pub trait Agent: Send + Sync {
 pub struct AgentResult {
     pub success: bool,
     pub message: String,
-    pub trace:   Vec<ChatMessage>,
+    pub trace:   Vec<ChatMessage>, // Full uncompressed trace
+    pub compressed_trace: Vec<ChatMessage>, // Compressed trace (after compression)
 }
 
 /// Core agent implementation that orchestrates any Thinker implementation
@@ -65,6 +66,7 @@ pub struct AgentCore {
 
     /// agent state (manipulated by main looper + brain/tool coroutines)
     pub trace:           Arc<RwLock<Vec<ChatMessage>>>,
+    pub full_trace:      Arc<RwLock<Vec<ChatMessage>>>, // Complete history before compression
     pub available_tools: Vec<Arc<dyn AnyTool>>,
     pub permissions:     Arc<RwLock<ClaimManager>>,
     pub state:           InternalAgentState,
@@ -100,7 +102,8 @@ impl AgentCore {
             },
             brain: Arc::new(RwLock::new(brain)),
             method: ToolCallMethod::FunctionCall,
-            trace: Arc::new(RwLock::new(trace)),
+            trace: Arc::new(RwLock::new(trace.clone())),
+            full_trace: Arc::new(RwLock::new(trace)),
             available_tools: available_tools.into_iter().map(|t| Arc::from(t) as Arc<dyn AnyTool>).collect(),
             permissions: Arc::new(RwLock::new(permissions)),
             state: InternalAgentState::Starting,
@@ -287,12 +290,15 @@ impl AgentCore {
             match &self.state {
                 InternalAgentState::Completed { success } => {
                     debug!(target: "agent::terminated", "completed");
-                    let trace = self.trace.clone();
-                    let guard = trace.read().await;
+                    let full_trace = self.full_trace.clone();
+                    let compressed_trace = self.trace.clone();
+                    let full_guard = full_trace.read().await;
+                    let compressed_guard = compressed_trace.read().await;
                     return Ok(AgentResult {
                         success: success.clone(),
                         message: "Agent completed".to_string(),
-                        trace: guard.clone(),
+                        trace: full_guard.clone(),
+                        compressed_trace: compressed_guard.clone(),
                     });
                 },
                 InternalAgentState::Failed { error } => {
@@ -400,15 +406,17 @@ impl AgentCore {
                 self.handle_event(InternalAgentEvent::CancelTask).await
                 .and({
                     // Emit UserInput event
-                    let _ = self.emit_event(AgentEvent::UserInput { 
-                        input: input.clone() 
+                    let _ = self.emit_event(AgentEvent::UserInput {
+                        input: input.clone()
                     }).await;
-                    
-                    self.trace.write().await.push(ChatMessage::User { 
-                        content: ChatMessageContent::Text(input), 
-                        name: None 
-                    });
-                    
+
+                    let user_message = ChatMessage::User {
+                        content: ChatMessageContent::Text(input),
+                        name: None
+                    };
+                    self.trace.write().await.push(user_message.clone());
+                    self.full_trace.write().await.push(user_message);
+
                     self.set_state(InternalAgentState::Running).await;
                     Ok(AgentResponse::Ack)
                 })
@@ -432,7 +440,13 @@ impl AgentCore {
             AgentRequest::WaitTurn => {
                 self.handle_wait_turn(backchannel).await;
                 return Ok(()); // We handle the response in the spawned task
-            } 
+            }
+            AgentRequest::TriggerContextCompression => {
+                // Trigger context compression by calling the check_and_compress_context method
+                // We'll send a special internal event to trigger the compression
+                let _ = self.internal_tx.send(InternalAgentEvent::ManualCompressionRequested).map_err(|_| AgentError::SessionClosed)?;
+                Ok(AgentResponse::Ack)
+            }
         }.unwrap_or_else(|e| AgentResponse::Error { error: e.to_string() });
 
         // ignore if channel is closed

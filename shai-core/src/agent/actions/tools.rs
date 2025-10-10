@@ -25,10 +25,11 @@ impl AgentCore {
         let available_tools = self.available_tools.clone();
         let claims = self.permissions.clone();
         let trace = self.trace.clone();
+        let full_trace = self.full_trace.clone();
 
         // Spawn a task to wait for all tool executions
         let mut join_handles = Vec::new();
-        
+
         // Spawn all tool executions
         for tc in tool_calls {
             let handle = Self::spawn_tool_static(
@@ -39,6 +40,7 @@ impl AgentCore {
                 claims.clone(),
                 internal_tx.clone(),
                 trace.clone(),
+                full_trace.clone(),
             );
             join_handles.push(handle);
         }
@@ -83,6 +85,7 @@ impl AgentCore {
         claims: Arc<RwLock<ClaimManager>>,
         internal_tx: broadcast::Sender<InternalAgentEvent>,
         trace: Arc<RwLock<Vec<ChatMessage>>>,
+        full_trace: Arc<RwLock<Vec<ChatMessage>>>,
     ) -> tokio::task::JoinHandle<bool> {
         tokio::spawn(async move {
             let tc_for_error = tc.clone();
@@ -144,10 +147,12 @@ impl AgentCore {
 
                     // let's first add tool result to trace
                     let _ = {
-                        trace.write().await.push(ChatMessage::Tool { 
+                        let tool_message = ChatMessage::Tool {
                             tool_call_id: call.tool_call_id.clone(),
                             content: result.to_string()
-                        });
+                        };
+                        trace.write().await.push(tool_message.clone());
+                        full_trace.write().await.push(tool_message);
                     };
 
                     // Emit tool call finish event

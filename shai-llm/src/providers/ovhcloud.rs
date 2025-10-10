@@ -45,6 +45,18 @@ impl OvhCloudProvider {
 
         request
     }
+
+    fn adjust_response_tokens(&self, mut response: ChatCompletionResponse) -> ChatCompletionResponse {
+        if let Some(ref mut usage) = response.usage {
+            if let Some(details) = &usage.completion_tokens_details {
+                let reasoning_tokens = details.reasoning_tokens;
+                if let Some(completion) = usage.completion_tokens {
+                    usage.completion_tokens = Some(completion.saturating_sub(reasoning_tokens));
+                }
+            }
+        }
+        response
+    }
 }
 
 #[async_trait]
@@ -67,10 +79,10 @@ impl LlmProvider for OvhCloudProvider {
 
     async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {
         let sanitized_request = self.sanitize_request(request);
-        let mut response = self.client.chat().create(sanitized_request).await
+        let response = self.client.chat().create(sanitized_request).await
             .map_err(|e| Box::new(e) as LlmError)?;
 
-        Ok(response)
+        Ok(self.adjust_response_tokens(response))
     }
 
     async fn chat_stream(&self, mut request: ChatCompletionParameters) -> Result<LlmStream, LlmError> {
