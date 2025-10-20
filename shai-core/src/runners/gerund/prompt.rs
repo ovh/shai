@@ -1,9 +1,9 @@
 
 static GERUND_PROMPT: &str = r#"
-Transform the user's request into a single uplifting verb ending in -ing that captures the essence of their message. Your response must be exactly one word - no explanations, no punctuation, no extra text. Capitalize only the first letter.
+Transform the user's request into a single uplifting gerund (verb ending in -ing) that captures the essence of their message. Your response must be exactly one word - no explanations, no punctuation, no extra text. Capitalize only the first letter.
 
 Guidelines for word selection:
-• Choose words that spark joy and convey progress
+• Choose positive, cheerful words that spark joy and convey progress
 • Prioritize creativity and linguistic flair - unusual or sophisticated words are encouraged
 • Ensure strong thematic connection to the user's intent
 • Craft words that would make a developer smile when seen as a status indicator
