@@ -1,4 +1,4 @@
-use super::structs::{LsToolParams, FileInfo};
+use super::structs::{FileInfo, LsToolParams};
 use crate::tools::{tool, ToolResult};
 use serde_json::json;
 use std::collections::HashMap;
@@ -14,7 +14,8 @@ impl LsTool {
 
     fn get_file_info(&self, path: &Path) -> Result<FileInfo, Box<dyn std::error::Error>> {
         let metadata = fs::metadata(path)?;
-        let name = path.file_name()
+        let name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
@@ -45,11 +46,13 @@ impl LsTool {
             let other = if mode & 0o004 != 0 { 'r' } else { '-' };
             let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
             let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
-            
+
             let file_type = if metadata.is_dir() { 'd' } else { '-' };
-            
-            format!("{}{}{}{}{}{}{}{}{}{}", 
-                file_type, user, user_w, user_x, group, group_w, group_x, other, other_w, other_x)
+
+            format!(
+                "{}{}{}{}{}{}{}{}{}{}",
+                file_type, user, user_w, user_x, group, group_w, group_x, other, other_w, other_x
+            )
         }
         #[cfg(not(unix))]
         {
@@ -73,15 +76,20 @@ impl LsTool {
         }
     }
 
-    fn list_directory(&self, params: &LsToolParams, current_depth: u32, files_collected: &mut u32) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
+    fn list_directory(
+        &self,
+        params: &LsToolParams,
+        current_depth: u32,
+        files_collected: &mut u32,
+    ) -> Result<Vec<FileInfo>, Box<dyn std::error::Error>> {
         let path = Path::new(&params.directory);
-        
+
         // Early return if we've hit the limit
         let max_files = params.max_files.unwrap_or(200);
         if *files_collected >= max_files {
             return Ok(Vec::new());
         }
-        
+
         if !path.exists() {
             return Err(format!("Directory '{}' does not exist", params.directory).into());
         }
@@ -91,7 +99,7 @@ impl LsTool {
         }
 
         let mut files = Vec::new();
-        
+
         // Check max depth
         if let Some(max_depth) = params.max_depth {
             if current_depth > max_depth {
@@ -101,7 +109,7 @@ impl LsTool {
 
         let entries = fs::read_dir(path)?;
         let mut dir_entries: Vec<_> = entries.collect::<Result<Vec<_>, _>>()?;
-        
+
         // Sort entries by name
         dir_entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
 
@@ -135,13 +143,17 @@ impl LsTool {
                             max_depth: params.max_depth,
                             max_files: params.max_files, // Keep original params
                         };
-                        
-                        match self.list_directory(&subdir_params, current_depth + 1, files_collected) {
+
+                        match self.list_directory(
+                            &subdir_params,
+                            current_depth + 1,
+                            files_collected,
+                        ) {
                             Ok(mut subdirs) => files.append(&mut subdirs),
                             Err(_) => continue, // Skip inaccessible directories
                         }
                     }
-                },
+                }
                 Err(_) => continue, // Skip inaccessible files
             }
         }
@@ -164,7 +176,8 @@ impl LsTool {
             let mut output = Vec::new();
             for file in files {
                 let size_str = self.format_size(file.size);
-                let modified_str = file.modified
+                let modified_str = file
+                    .modified
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| {
                         let secs = d.as_secs();
@@ -177,24 +190,31 @@ impl LsTool {
                 let file_type = if file.is_dir { "/" } else { "" };
                 output.push(format!(
                     "{} {:>8} {} {}{}",
-                    file.permissions,
-                    size_str,
-                    modified_str,
-                    file.name,
-                    file_type
+                    file.permissions, size_str, modified_str, file.name, file_type
                 ));
             }
             output.join("\n")
         } else {
             // Show one file per line for better readability
-            files.iter()
-                .map(|f| if f.is_dir { format!("{}/", f.name) } else { f.name.clone() })
+            files
+                .iter()
+                .map(|f| {
+                    if f.is_dir {
+                        format!("{}/", f.name)
+                    } else {
+                        f.name.clone()
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
 
         if truncated {
-            format!("{}\n\n... (output truncated, showing first {} files)", base_output, files.len())
+            format!(
+                "{}\n\n... (output truncated, showing first {} files)",
+                base_output,
+                files.len()
+            )
         } else {
             base_output
         }
@@ -218,30 +238,31 @@ impl LsTool {
         match self.list_directory(&params, 0, &mut files_collected) {
             Ok(files) => {
                 let output = self.format_output(&files, &params);
-                
+
                 let mut meta = HashMap::new();
                 meta.insert("directory".to_string(), json!(params.directory));
                 meta.insert("file_count".to_string(), json!(files.len()));
                 meta.insert("recursive".to_string(), json!(params.recursive));
                 meta.insert("show_hidden".to_string(), json!(params.show_hidden));
                 meta.insert("long_format".to_string(), json!(params.long_format));
-                
+
                 if let Some(max_depth) = params.max_depth {
                     meta.insert("max_depth".to_string(), json!(max_depth));
                 }
                 if let Some(max_files) = params.max_files {
                     meta.insert("max_files".to_string(), json!(max_files));
-                    meta.insert("truncated".to_string(), json!(files.len() >= max_files as usize));
+                    meta.insert(
+                        "truncated".to_string(),
+                        json!(files.len() >= max_files as usize),
+                    );
                 }
 
                 ToolResult::Success {
                     output,
                     metadata: Some(meta),
                 }
-            },
-            Err(e) => {
-                ToolResult::error(format!("Failed to list directory: {}", e))
             }
+            Err(e) => ToolResult::error(format!("Failed to list directory: {}", e)),
         }
     }
 }

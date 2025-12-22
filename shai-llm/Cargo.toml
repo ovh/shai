@@ -6,9 +6,7 @@ edition = "2021"
 [dependencies]
 # New LLM module dependencies
 async-trait = "0.1"
-openssl = { version = "0.10", features = ["vendored"] }
-native-tls = { version = "0.2", features = ["vendored"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
 futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
