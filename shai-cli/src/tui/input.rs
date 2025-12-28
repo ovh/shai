@@ -75,6 +75,9 @@ pub struct InputArea<'a> {
     
     // theme colors
     palette: ThemePalette,
+    
+    // Track if we just entered a backslash to allow multiline
+    just_entered_backslash: bool,
 }
 
 impl InputArea<'_> {
@@ -102,6 +105,7 @@ impl InputArea<'_> {
             suggestion_search: None,
             gitignore_patterns: Self::load_gitignore_patterns(),
             palette,
+            just_entered_backslash: false,
         }
     }
 
@@ -334,14 +338,34 @@ impl InputArea<'_> {
                             command: input
                          });
                     } else {
+                        // Remove backslashes from the final input
+                        let cleaned_input = self.remove_backslashes_from_input(&input);
                         return Some(UserAction::UserInput { 
-                            input
+                            input: cleaned_input
                         });
                     }
                 }
             }
         }
         None
+    }
+
+    /// Remove backslashes that were used for multiline input
+    fn remove_backslashes_from_input(&self, input: &str) -> String {
+        let lines: Vec<&str> = input.lines().collect();
+        let mut cleaned_lines: Vec<String> = Vec::new();
+        
+        for line in lines {
+            if line.ends_with('\\') && line.chars().count() > 1 {
+                // Remove the backslash from the line - this preserves the newline
+                let cleaned_line: String = line[..line.len() - 1].to_string();
+                cleaned_lines.push(cleaned_line);
+            } else {
+                cleaned_lines.push(line.to_string());
+            }
+        }
+        
+        cleaned_lines.join("\n")
     }
 
     fn check_helper_msg(&mut self) -> String {
@@ -439,11 +463,35 @@ impl InputArea<'_> {
                 self.input.input(event);
                 return UserAction::Nope;
             }
+            KeyCode::Char('\\') => {
+                // Handle backslash input - mark that we just entered a backslash
+                self.just_entered_backslash = true;
+                let event: Event = Event::Key(KeyEvent::from(key_event));
+                let input: Input = event.into();
+                self.input.input(input);
+            }
             KeyCode::Enter => {
                 // Alt+Enter creates a new line immediately
                 if key_event.modifiers.contains(KeyModifiers::ALT) {
                     self.last_keystroke_time = Some(now);
 
+                    // Create fake Enter event without Alt modifier for TextArea
+                    let fake_event = KeyEvent {
+                        code: KeyCode::Enter,
+                        modifiers: KeyModifiers::empty(),
+                        kind: key_event.kind,
+                        state: key_event.state,
+                    };
+                    let event: Input = Event::Key(fake_event).into();
+                    self.input.input(event);
+                    return UserAction::Nope;
+                }
+
+                // If we just entered a backslash, treat this as a newline instead of submission
+                if self.just_entered_backslash {
+                    self.just_entered_backslash = false;
+                    self.last_keystroke_time = Some(now);
+                    
                     // Create fake Enter event without Alt modifier for TextArea
                     let fake_event = KeyEvent {
                         code: KeyCode::Enter,
@@ -541,6 +589,11 @@ impl InputArea<'_> {
                 let event: Event = Event::Key(KeyEvent::from(key_event));
                 let input: Input = event.into();
                 self.input.input(input);
+                
+                // Reset the backslash flag when any key other than Enter is pressed
+                if key_event.code != KeyCode::Enter {
+                    self.just_entered_backslash = false;
+                }
             }
         }
 
