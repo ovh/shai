@@ -50,9 +50,7 @@ impl OvhCloudProvider {
 #[async_trait]
 impl LlmProvider for OvhCloudProvider {
     async fn models(&self) -> Result<ListModelResponse, LlmError> {
-        let response = self.client.models().list().await
-            .map_err(|e| Box::new(e) as LlmError)?;
-        Ok(response)
+        super::models::list_models_compat(&self.client).await
     }
 
     async fn default_model(&self) -> Result<String, LlmError> {
