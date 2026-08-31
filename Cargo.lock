@@ -3139,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "shai"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "ansi-to-tui",
  "async-trait",
@@ -3171,7 +3171,7 @@ dependencies = [
 
 [[package]]
 name = "shai-core"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3211,7 +3211,7 @@ dependencies = [
 
 [[package]]
 name = "shai-http"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3235,7 +3235,7 @@ dependencies = [
 
 [[package]]
 name = "shai-llm"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -3259,7 +3259,7 @@ dependencies = [
 
 [[package]]
 name = "shai-macros"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "proc-macro2",
  "quote",
