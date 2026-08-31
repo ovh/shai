@@ -32,5 +32,5 @@ thiserror = "2.0"
 anyhow = "1.0"
 
 # OpenAI types
-openai_dive = "1.3.1"
+openai_dive = "1.4.3"
 chrono = { version = "0.4", features = ["serde"] }

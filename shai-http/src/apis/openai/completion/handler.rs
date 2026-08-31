@@ -166,6 +166,7 @@ async fn handle_chat_completion_non_stream(
                 name: None,
                 tool_calls: None,
                 audio: None,
+                reasoning: None,
                 reasoning_content: if reasoning_steps.is_empty() {
                     None
                 } else {
@@ -177,10 +178,6 @@ async fn handle_chat_completion_non_stream(
             logprobs: None,
         }],
         usage: Some(Usage {
-            input_tokens: None,
-            input_tokens_details: None,
-            output_tokens: None,
-            output_tokens_details: None,
             prompt_tokens: Some(0),
             completion_tokens: Some(0),
             total_tokens: 0,
@@ -237,6 +234,7 @@ fn build_message_trace(params: &ChatCompletionParameters) -> Vec<ChatMessage> {
                         tool_calls: None,
                         name: name.clone(),
                         audio: None,
+                        reasoning: None,
                         reasoning_content: None,
                         refusal: None,
                     });

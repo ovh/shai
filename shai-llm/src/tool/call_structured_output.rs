@@ -204,6 +204,7 @@ impl IntoChatMessage for AssistantResponse {
 
         ChatMessage::Assistant {
             content: Some(ChatMessageContent::Text(self.content)),
+            reasoning: None,
             reasoning_content: self.reasoning_content,
             tool_calls,
             refusal: None,

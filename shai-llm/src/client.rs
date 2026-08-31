@@ -295,7 +295,16 @@ pub trait ExtractThinkContent {
 impl ExtractThinkContent for ChatCompletionResponse {
     fn extract_think_content(mut self) -> ChatCompletionResponse {
         for choice in &mut self.choices {
-            if let ChatMessage::Assistant { reasoning_content, content, .. } = &mut choice.message {
+            if let ChatMessage::Assistant { reasoning, reasoning_content, content, .. } = &mut choice.message {
+                // Providers are split on the field name: some send `reasoning`, some
+                // `reasoning_content`. Normalize onto reasoning_content, which is what
+                // the rest of shai reads.
+                if reasoning_content.is_none() {
+                    if let Some(text) = reasoning.take().filter(|t| !t.trim().is_empty()) {
+                        *reasoning_content = Some(text);
+                    }
+                }
+
                 if let Some(ChatMessageContent::Text(content_text)) = content {
                     let think_regex = Regex::new(r"(?s)<think>(.*?)</think>").unwrap();
                     if let Some(reasoning) = think_regex.captures(content_text).map(|c| c.get(1).unwrap().as_str().trim()) {
@@ -330,6 +339,7 @@ impl FixMistralAlternating for ChatCompletionParameters {
                     if pos % 2 != 0 {
                         res.messages.insert(i, ChatMessage::Assistant {
                             content: Some(ChatMessageContent::Text("I understand.".to_string())),
+                            reasoning: None,
                             reasoning_content: None, tool_calls: None, refusal: None, name: None, audio: None,
                         });
                     }
@@ -351,5 +361,113 @@ impl FixMistralAlternating for ChatCompletionParameters {
             i += 1;
         }
         res
+    }
+}
+#[cfg(test)]
+mod openai_dive_compat {
+    use openai_dive::v1::resources::chat::{
+        ChatCompletionResponse, ChatCompletionTool, ChatCompletionToolChoice,
+        ChatCompletionToolType, ChatMessage, ChatMessageContent, ChatCompletionFunction,
+        ImageUrlDetail,
+    };
+    use crate::client::ExtractThinkContent;
+
+    /// 1.4.x switched `rename_all` from "lowercase" to "snake_case" on these enums.
+    /// Every variant we rely on is a single word, so the wire format must be unchanged.
+    #[test]
+    fn role_tags_and_enums_serialize_unchanged() {
+        let cases = vec![
+            (ChatMessage::System { content: ChatMessageContent::Text("s".into()), name: None }, "system"),
+            (ChatMessage::User { content: ChatMessageContent::Text("u".into()), name: None }, "user"),
+            (ChatMessage::Developer { content: ChatMessageContent::Text("d".into()), name: None }, "developer"),
+            (ChatMessage::Tool { content: ChatMessageContent::Text("t".into()), tool_call_id: "1".into() }, "tool"),
+            (ChatMessage::Assistant {
+                content: Some(ChatMessageContent::Text("a".into())),
+                reasoning: None, reasoning_content: None, refusal: None, name: None,
+                audio: None, tool_calls: None,
+            }, "assistant"),
+        ];
+
+        for (msg, expected_role) in cases {
+            let json = serde_json::to_value(&msg).unwrap();
+            assert_eq!(json["role"], expected_role, "role tag changed for {expected_role}");
+        }
+
+        assert_eq!(serde_json::to_value(ChatCompletionToolType::Function).unwrap(), "function");
+        assert_eq!(serde_json::to_value(ChatCompletionToolChoice::Auto).unwrap(), "auto");
+        assert_eq!(serde_json::to_value(ChatCompletionToolChoice::None).unwrap(), "none");
+        assert_eq!(serde_json::to_value(ChatCompletionToolChoice::Required).unwrap(), "required");
+        assert_eq!(serde_json::to_value(ImageUrlDetail::Auto).unwrap(), "auto");
+    }
+
+    /// An assistant message must not serialize `reasoning` / `reasoning_content` when unset.
+    #[test]
+    fn unset_reasoning_is_not_serialized() {
+        let msg = ChatMessage::Assistant {
+            content: Some(ChatMessageContent::Text("hello".into())),
+            reasoning: None, reasoning_content: None, refusal: None, name: None,
+            audio: None, tool_calls: None,
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("reasoning").is_none());
+        assert!(json.get("reasoning_content").is_none());
+    }
+
+    /// Tool definitions must still round-trip the shape providers expect.
+    #[test]
+    fn tool_definition_shape_unchanged() {
+        let tool = ChatCompletionTool {
+            r#type: ChatCompletionToolType::Function,
+            function: ChatCompletionFunction {
+                name: "bash".into(),
+                description: Some("run a command".into()),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["type"], "function");
+        assert_eq!(json["function"]["name"], "bash");
+    }
+
+    /// Providers are split on the reasoning field name; both must land on
+    /// reasoning_content, which is what the agent and TUI read.
+    #[test]
+    fn reasoning_field_is_normalized_onto_reasoning_content() {
+        let body = r#"{
+            "id":"1","object":"chat.completion","created":0,"model":"m",
+            "choices":[{"index":0,"message":{
+                "role":"assistant","content":"answer","reasoning":"because"
+            },"finish_reason":"stop"}]
+        }"#;
+
+        let response: ChatCompletionResponse = serde_json::from_str(body).unwrap();
+        let response = response.extract_think_content();
+
+        let ChatMessage::Assistant { reasoning_content, content, .. } = &response.choices[0].message else {
+            panic!("expected an assistant message");
+        };
+        assert_eq!(reasoning_content.as_deref(), Some("because"));
+        assert!(matches!(content, Some(ChatMessageContent::Text(t)) if t == "answer"));
+    }
+
+    /// The pre-existing <think> extraction must keep working, and must win over
+    /// a provider-supplied reasoning field.
+    #[test]
+    fn think_tags_still_extracted() {
+        let body = r#"{
+            "id":"1","object":"chat.completion","created":0,"model":"m",
+            "choices":[{"index":0,"message":{
+                "role":"assistant","content":"<think>pondering</think>final"
+            },"finish_reason":"stop"}]
+        }"#;
+
+        let response: ChatCompletionResponse = serde_json::from_str(body).unwrap();
+        let response = response.extract_think_content();
+
+        let ChatMessage::Assistant { reasoning_content, content, .. } = &response.choices[0].message else {
+            panic!("expected an assistant message");
+        };
+        assert_eq!(reasoning_content.as_deref(), Some("pondering"));
+        assert!(matches!(content, Some(ChatMessageContent::Text(t)) if t == "final"));
     }
 }

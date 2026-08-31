@@ -127,6 +127,7 @@ mod tests {
                 },
                 ChatMessage::Assistant {
                     content: None,
+                    reasoning: None,
                     reasoning_content: None,
                     refusal: None,
                     name: None,
