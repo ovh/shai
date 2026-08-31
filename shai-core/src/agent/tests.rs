@@ -75,6 +75,7 @@ impl Brain for SleepingThinker {
             // On first call, use the sleeping tool
             Ok(ThinkerDecision::agent_continue(ChatMessage::Assistant {
                 content: None,
+                reasoning: None,
                 reasoning_content: None,
                 tool_calls: Some(vec![ToolCall {
                     id: "call_1".to_string(),
@@ -91,6 +92,7 @@ impl Brain for SleepingThinker {
         } else {
             Ok(ThinkerDecision::agent_pause(ChatMessage::Assistant {
                             content: Some(ChatMessageContent::Text("we are done".to_string())),
+                            reasoning: None,
                             reasoning_content: None,
                             tool_calls: None,
                             name: None,
@@ -122,6 +124,7 @@ impl Brain for PausableThinker {
                 // First call - use the sleeping tool
                 Ok(ThinkerDecision::agent_continue(ChatMessage::Assistant {
                     content: None,
+                    reasoning: None,
                     reasoning_content: None,
                     tool_calls: Some(vec![ToolCall {
                         id: "call_1".to_string(),
@@ -140,6 +143,7 @@ impl Brain for PausableThinker {
                 // Two tool calls completed - finish
                 Ok(ThinkerDecision::agent_pause(ChatMessage::Assistant {
                     content: Some(ChatMessageContent::Text("Finished after pause/resume".to_string())),
+                    reasoning: None,
                     reasoning_content: None,
                     tool_calls: None,
                     name: None,
@@ -350,6 +354,7 @@ impl Brain for RealToolsThinker {
                 // First step: List current directory
                 Ok(ThinkerDecision::agent_continue(ChatMessage::Assistant {
                     content: None,
+                    reasoning: None,
                     reasoning_content: None,
                     tool_calls: Some(vec![ToolCall {
                         id: "call_ls".to_string(),
@@ -370,6 +375,7 @@ impl Brain for RealToolsThinker {
                 // Second step: Read a file (if it exists) - let's try a common file
                 Ok(ThinkerDecision::agent_continue(ChatMessage::Assistant {
                     content: None,
+                    reasoning: None,
                     reasoning_content: None,
                     tool_calls: Some(vec![ToolCall {
                         id: "call_read".to_string(),
@@ -390,6 +396,7 @@ impl Brain for RealToolsThinker {
                 // Done after two tool calls
                 Ok(ThinkerDecision::agent_pause(ChatMessage::Assistant {
                     content: Some(ChatMessageContent::Text("Successfully used real tools".to_string())),
+                    reasoning: None,
                     reasoning_content: None,
                     tool_calls: None,
                     name: None,

@@ -223,6 +223,7 @@ pub fn build_message_trace(params: &ResponseParameters) -> Vec<ChatMessage> {
                                 tool_calls: None,
                                 name: None,
                                 audio: None,
+                                reasoning: None,
                                 reasoning_content: None,
                                 refusal: None,
                             });

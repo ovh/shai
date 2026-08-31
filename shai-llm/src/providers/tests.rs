@@ -382,6 +382,7 @@ mod integration_tests {
                     },
                     ChatMessage::Assistant {
                         content: None,
+                        reasoning: None,
                         reasoning_content: None,
                         refusal: None,
                         name: None,
@@ -472,6 +473,7 @@ mod integration_tests {
                     },
                     ChatMessage::Assistant {
                         content: Some(ChatMessageContent::Text("I'll create a hello.py file with a hello world function for you.".to_string())),
+                        reasoning: None,
                         reasoning_content: None,
                         refusal: None,
                         name: None,
@@ -495,6 +497,7 @@ mod integration_tests {
                     },
                     ChatMessage::Assistant {
                         content: Some(ChatMessageContent::Text("I'll read the hello.py file to verify its contents.".to_string())),
+                        reasoning: None,
                         reasoning_content: None,
                         refusal: None,
                         name: None,

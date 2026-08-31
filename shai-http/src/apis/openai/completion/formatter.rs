@@ -77,6 +77,7 @@ impl EventFormatter for ChatCompletionFormatter {
                         // Stream error as assistant message
                         let delta = DeltaChatMessage::Assistant {
                             content: Some(ChatMessageContent::Text(format!("Error: {}", err))),
+                            reasoning: None,
                             reasoning_content: None,
                             refusal: None,
                             name: None,
@@ -92,6 +93,7 @@ impl EventFormatter for ChatCompletionFormatter {
                 let thinking_text = format!("[toolcall: {}]", call.tool_name);
                 let delta = DeltaChatMessage::Assistant {
                     content: None,
+                    reasoning: None,
                     reasoning_content: Some(thinking_text),
                     refusal: None,
                     name: None,
@@ -120,6 +122,7 @@ impl EventFormatter for ChatCompletionFormatter {
 
                 let delta = DeltaChatMessage::Assistant {
                     content: None,
+                    reasoning: None,
                     reasoning_content: Some(thinking_text),
                     refusal: None,
                     name: None,
@@ -138,6 +141,7 @@ impl EventFormatter for ChatCompletionFormatter {
                 // Send the final content delta
                 let content_delta = DeltaChatMessage::Assistant {
                     content: Some(ChatMessageContent::Text(self.accumulated_text.clone())),
+                    reasoning: None,
                     reasoning_content: None,
                     refusal: None,
                     name: None,
@@ -155,6 +159,7 @@ impl EventFormatter for ChatCompletionFormatter {
                 // Stream error as content delta
                 let delta = DeltaChatMessage::Assistant {
                     content: Some(ChatMessageContent::Text(format!("Error: {}", error))),
+                    reasoning: None,
                     reasoning_content: None,
                     refusal: None,
                     name: None,

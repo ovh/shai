@@ -117,6 +117,7 @@ impl AnthropicProvider {
                         index: Some(0),
                         delta: DeltaChatMessage::Assistant {
                             content,
+                            reasoning: None,
                             reasoning_content: None,
                             refusal: None,
                             name: None,
@@ -144,6 +145,7 @@ impl AnthropicProvider {
                         index: Some(0),
                         delta: DeltaChatMessage::Assistant {
                             content: None,
+                            reasoning: None,
                             reasoning_content: None,
                             refusal: None,
                             name: None,
@@ -169,6 +171,7 @@ impl AnthropicProvider {
                         index: Some(0),
                         delta: DeltaChatMessage::Assistant {
                             content: None,
+                            reasoning: None,
                             reasoning_content: None,
                             refusal: None,
                             name: None,
@@ -371,6 +374,7 @@ impl AnthropicProvider {
                 index: 0,
                 message: ChatMessage::Assistant {
                     content,
+                    reasoning: None,
                     reasoning_content: None,
                     refusal: None,
                     name: None,
@@ -381,10 +385,6 @@ impl AnthropicProvider {
                 logprobs: None,
             }],
             usage: Some(Usage {
-                input_tokens: None,
-                input_tokens_details: None,
-                output_tokens: None,
-                output_tokens_details: None,
                 prompt_tokens: Some(response["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32),
                 completion_tokens: Some(response["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32),
                 total_tokens: response["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32 + response["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,

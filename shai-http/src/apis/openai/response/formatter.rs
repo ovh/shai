@@ -7,7 +7,7 @@ use openai_dive::v1::resources::response::{
         ResponseOutput, Role,
     },
 };
-use openai_dive::v1::resources::shared::Usage;
+use openai_dive::v1::resources::response::shared::ResponseUsage;
 use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
 use shai_core::agent::AgentEvent;
 use uuid::Uuid;
@@ -70,19 +70,16 @@ impl ResponseFormatter {
             tool_choice: self.payload.tool_choice.clone(),
             tools: self.payload.tools.clone().unwrap_or_default(),
             top_p: self.payload.top_p,
+            top_logprobs: None,
             truncation: self.payload.truncation.clone(),
             user: self.payload.user.clone(),
-            usage: Usage {
-                input_tokens: None,
+            usage: Some(ResponseUsage {
+                input_tokens: Some(0),
                 input_tokens_details: None,
-                output_tokens: None,
+                output_tokens: Some(0),
                 output_tokens_details: None,
-                completion_tokens: Some(0),
-                prompt_tokens: Some(0),
                 total_tokens: 0,
-                completion_tokens_details: None,
-                prompt_tokens_details: None,
-            },
+            }),
             incomplete_details: None,
             error: None,
         }
@@ -135,11 +132,11 @@ impl EventFormatter for ResponseFormatter {
             // Tool calls
             AgentEvent::ToolCallStarted { call, .. } => {
                 let tool_output = ResponseOutput::FunctionToolCall(FunctionToolCall {
-                    id: call.tool_call_id.clone(),
+                    id: Some(call.tool_call_id.clone()),
                     call_id: call.tool_call_id.clone(),
                     name: call.tool_name.clone(),
                     arguments: call.parameters.to_string(),
-                    status: InputItemStatus::InProgress,
+                    status: Some(InputItemStatus::InProgress),
                 });
 
                 let output_index = self.output.len();
@@ -165,17 +162,17 @@ impl EventFormatter for ResponseFormatter {
 
                 if let Some(idx) = self.output.iter().position(|o| {
                     if let ResponseOutput::FunctionToolCall(tc) = o {
-                        tc.id == call.tool_call_id
+                        tc.id.as_deref() == Some(call.tool_call_id.as_str())
                     } else {
                         false
                     }
                 }) {
                     self.output[idx] = ResponseOutput::FunctionToolCall(FunctionToolCall {
-                        id: call.tool_call_id.clone(),
+                        id: Some(call.tool_call_id.clone()),
                         call_id: call.tool_call_id.clone(),
                         name: call.tool_name.clone(),
                         arguments: call.parameters.to_string(),
-                        status: tool_status,
+                        status: Some(tool_status),
                     });
 
                     let event = ResponseStreamEvent::output_item_done(self.sequence, idx, self.output[idx].clone());

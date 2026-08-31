@@ -38,9 +38,7 @@ impl OpenAICompatibleProvider {
 #[async_trait]
 impl LlmProvider for OpenAICompatibleProvider {
     async fn models(&self) -> Result<ListModelResponse, LlmError> {
-        let response = self.client.models().list().await
-            .map_err(|e| Box::new(e) as LlmError)?;
-        Ok(response)
+        super::models::list_models_compat(&self.client).await
     }
 
     async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {

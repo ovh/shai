@@ -8,7 +8,7 @@ edition = "2021"
 shai-core = { path = "../shai-core" }
 shai-llm = { path = "../shai-llm" }
 shai-http = { path = "../shai-http" }
-openai_dive = "1.3.1"
+openai_dive = "1.4.3"
 chrono = "0.4"
 clap = { version = "4.0", features = ["derive"] }
 tempfile = "3.20.0"

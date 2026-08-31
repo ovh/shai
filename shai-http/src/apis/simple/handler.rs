@@ -104,6 +104,7 @@ fn build_message_trace(query: &MultiModalQuery) -> Vec<ChatMessage> {
                         tool_calls: None,
                         name: None,
                         audio: None,
+                        reasoning: None,
                         reasoning_content: None,
                         refusal: None,
                     });
@@ -127,6 +128,7 @@ fn build_message_trace(query: &MultiModalQuery) -> Vec<ChatMessage> {
                         }]),
                         name: None,
                         audio: None,
+                        reasoning: None,
                         reasoning_content: None,
                         refusal: None,
                     });
