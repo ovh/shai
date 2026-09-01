@@ -25,7 +25,14 @@ impl ShaiSessionClient {
         let response = ShaiProtocol::read_response(&mut stream)?;
         
         match response {
-            ShaiResponse::Ok { data: ResponseData::Commands(entries) } => Ok(entries.into()),
+            ShaiResponse::Ok { data: ResponseData::Commands(entries) } => {
+                // Handle empty vec to avoid creating buffer with capacity 0
+                if entries.is_empty() {
+                    Ok(CommandHistory::new(1))
+                } else {
+                    Ok(entries.into())
+                }
+            },
             ShaiResponse::Ok { .. } => Err("Unexpected response type".into()),
             ShaiResponse::Error { message } => Err(message.into()),
         }
@@ -41,7 +48,14 @@ impl ShaiSessionClient {
         let response = ShaiProtocol::read_response(&mut stream)?;
         
         match response {
-            ShaiResponse::Ok { data: ResponseData::Commands(entries) } => Ok(entries.into()),
+            ShaiResponse::Ok { data: ResponseData::Commands(entries) } => {
+                // Handle empty vec to avoid creating buffer with capacity 0
+                if entries.is_empty() {
+                    Ok(CommandHistory::new(1))
+                } else {
+                    Ok(entries.into())
+                }
+            },
             ShaiResponse::Ok { .. } => Err("Unexpected response type".into()),
             ShaiResponse::Error { message } => Err(message.into()),
         }

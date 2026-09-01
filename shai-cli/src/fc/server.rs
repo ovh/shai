@@ -11,6 +11,7 @@ use crate::fc::protocol::{ShaiProtocol, ShaiRequest, ShaiResponse, ResponseData}
 /// Socket server for serving command history data
 pub struct ShaiSessionServer {
     history: Arc<Mutex<CommandHistory>>,
+    history_capacity: usize,
     socket_path: String,
     shutdown: Arc<AtomicBool>,
     pending_command: Arc<Mutex<Option<String>>>,
@@ -20,6 +21,7 @@ impl ShaiSessionServer {
     pub fn new(session_id: &str, history_size: usize, output_buffer_size: usize) -> Self {
         Self {
             history: Arc::new(Mutex::new(CommandHistory::new(history_size))),
+            history_capacity: history_size,
             socket_path: format!("/tmp/shai_history_{}", session_id),
             shutdown: Arc::new(AtomicBool::new(false)),
             pending_command: Arc::new(Mutex::new(None)),
@@ -38,6 +40,7 @@ impl ShaiSessionServer {
 
         let listener = UnixListener::bind(&self.socket_path)?;
         let history = Arc::clone(&self.history);
+        let history_capacity = self.history_capacity;
         let socket_path = self.socket_path.clone();
         let shutdown = Arc::clone(&self.shutdown);
         let pending_command = Arc::clone(&self.pending_command);
@@ -53,7 +56,7 @@ impl ShaiSessionServer {
                         let history = Arc::clone(&history);
                         let pending_command = Arc::clone(&pending_command);
                         thread::spawn(move || {
-                            if let Err(e) = Self::handle_client(stream, history, pending_command) {
+                            if let Err(e) = Self::handle_client(stream, history, history_capacity, pending_command) {
                                 eprintln!("Error handling client: {}", e);
                             }
                         });
@@ -81,11 +84,12 @@ impl ShaiSessionServer {
     fn handle_client(
         mut stream: UnixStream,
         history: Arc<Mutex<CommandHistory>>,
+        history_capacity: usize,
         pending_command: Arc<Mutex<Option<String>>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let request = ShaiProtocol::read_request(&mut stream)?;
         
-        let response = Self::process_request(request, &history, &pending_command);
+        let response = Self::process_request(request, &history, history_capacity, &pending_command);
         ShaiProtocol::write_response(&mut stream, &response)?;
         
         Ok(())
@@ -94,6 +98,7 @@ impl ShaiSessionServer {
     fn process_request(
         request: ShaiRequest,
         history_ref: &Arc<Mutex<CommandHistory>>,
+        history_capacity: usize,
         pending_command_ref: &Arc<Mutex<Option<String>>>,
     ) -> ShaiResponse {
         match request {
@@ -133,7 +138,9 @@ impl ShaiSessionServer {
             ShaiRequest::Clear => {
                 match history_ref.lock() {
                     Ok(mut history) => {
-                        history.clear();
+                        // Recreate the buffer with the original capacity instead of calling clear()
+                        // because AllocRingBuffer::clear() sets capacity to 0
+                        *history = CommandHistory::new(history_capacity);
                         ShaiResponse::Ok { data: ResponseData::Empty }
                     }
                     Err(_) => ShaiResponse::Error { message: "Lock error".to_string() },

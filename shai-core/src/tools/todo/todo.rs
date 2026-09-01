@@ -81,17 +81,19 @@ impl TodoWriteTool {
     async fn execute(&self, params: TodoWriteParams) -> ToolResult {
         // Convert input todos to full TodoItems
         let todo_items: Vec<TodoItem> = params.todos.into_iter().map(|input| input.into()).collect();
+        let count = todo_items.len();
         
         // Replace entire list
         self.storage.replace_all(todo_items.clone()).await;
         
-        let output = self.storage.format_all(&todo_items);
+        let formatted_todos = self.storage.format_all(&todo_items);
+        let output = format!("Updated {} todo items.\n\n{}", count, formatted_todos);
         
         ToolResult::Success {
             output,
             metadata: Some({
                 let mut meta = HashMap::new();
-                meta.insert("todo_count".to_string(), json!(todo_items.len()));
+                meta.insert("todo_count".to_string(), json!(count));
                 meta
             }),
         }
