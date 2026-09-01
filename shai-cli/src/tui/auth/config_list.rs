@@ -18,6 +18,7 @@ use shai_llm::client::LlmClient;
 pub struct ModalConfig {
     config: ShaiConfig,
     selected_index: usize,
+    error_message: Option<String>,
 }
 
 impl ModalConfig {
@@ -28,6 +29,7 @@ impl ModalConfig {
         Self {
             config,
             selected_index: 0,
+            error_message: None,
         }
     }
 
@@ -47,6 +49,9 @@ impl ModalConfig {
 
 impl ModalConfig {
     pub async fn handle_event(&mut self, key_event: KeyEvent) -> NavAction {
+        // Clear any error message on any key press
+        self.error_message = None;
+
         match key_event.code {
             KeyCode::Up => {
                 if self.selected_index > 0 {
@@ -67,12 +72,12 @@ impl ModalConfig {
                 } else {
                     // Select existing provider and save config
                     if let Err(e) = self.config.set_selected_provider(self.selected_index) {
-                        eprintln!("Error selecting provider: {}", e);
+                        self.error_message = Some(format!("Error selecting provider: {}", e));
                         return NavAction::None;
                     }
                     
                     if let Err(e) = self.config.save() {
-                        eprintln!("Error saving config: {}", e);
+                        self.error_message = Some(format!("Error saving config: {}", e));
                         return NavAction::None;
                     }
                     
@@ -87,7 +92,7 @@ impl ModalConfig {
                 // Delete the selected provider (only if it's not the "Add provider" option and we have providers)
                 if !self.is_add_provider_selected() && !self.config.providers.is_empty() {
                     if let Err(e) = self.config.remove_provider(self.selected_index) {
-                        eprintln!("Error removing provider: {}", e);
+                        self.error_message = Some(format!("Error removing provider: {}", e));
                         return NavAction::None;
                     }
                     
@@ -98,7 +103,8 @@ impl ModalConfig {
                     
                     // Save config after deletion
                     if let Err(e) = self.config.save() {
-                        eprintln!("Error saving config after deletion: {}", e);
+                        self.error_message =
+                            Some(format!("Error saving config after deletion: {}", e));
                     }
                 }
                 NavAction::None
@@ -109,14 +115,23 @@ impl ModalConfig {
 
     pub fn height(&self) -> usize {
         // 3 for border + title + help, then 1 line per provider + 1 empty line + 1 for "add provider"
-        4 + self.total_items() + 1 + 1
+        // If there's an error, add 2 more
+        let base_height = 4 + self.total_items() + 1 + 1;
+        let error_height = if self.error_message.is_some() { 2 } else { 0 };
+        base_height + error_height
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
-        let [list, help] = Layout::vertical(vec![
-            Constraint::Length((4 + 1 + self.total_items() + 1) as u16),
-            Constraint::Length(1)
-        ]).areas(area);
+        let mut constraints = vec![Constraint::Length((4 + 1 + self.total_items() + 1) as u16)];
+
+        // Add error area if error message exists
+        if self.error_message.is_some() {
+            constraints.push(Constraint::Length(2));
+        }
+
+        constraints.push(Constraint::Length(1)); // help line
+
+        let layout_areas = Layout::vertical(constraints).split(area);
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -166,17 +181,36 @@ impl ModalConfig {
         
         let text = Text::from(lines);
         let paragraph = Paragraph::new(text).block(block);
-        frame.render_widget(paragraph, list);
+        frame.render_widget(paragraph, layout_areas[0]);
 
-        let help_text = if self.config.providers.is_empty() {
-            " ↑↓ navigate • Enter add provider • Esc exit"
-        } else {
-            " ↑↓ navigate • Enter select/add • Backspace/d delete • Esc exit"
-        };
-        
-        frame.render_widget(Line::from(vec![
-            Span::styled(help_text, Style::default().fg(Color::DarkGray))
-        ]), help);
+        // Draw error message if present
+        if let Some(error) = &self.error_message {
+            let error_area_index = 1;
+            if let Some(error_area) = layout_areas.get(error_area_index) {
+                frame.render_widget(
+                    Paragraph::new(error.clone()).style(Style::default().fg(Color::Red)),
+                    *error_area,
+                );
+            }
+        }
+
+        // Draw help text
+        let help_area_index = if self.error_message.is_some() { 2 } else { 1 };
+        if let Some(help_area) = layout_areas.get(help_area_index) {
+            let help_text = if self.config.providers.is_empty() {
+                " ↑↓ navigate • Enter add provider • Esc exit"
+            } else {
+                " ↑↓ navigate • Enter select/add • Backspace/d delete • Esc exit"
+            };
+
+            frame.render_widget(
+                Line::from(vec![Span::styled(
+                    help_text,
+                    Style::default().fg(Color::DarkGray),
+                )]),
+                *help_area,
+            );
+        }
     }
 
 }
