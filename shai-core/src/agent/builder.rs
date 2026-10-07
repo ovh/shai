@@ -12,11 +12,11 @@ use crate::config::agent::{AgentConfig, CompactionConfig, VerificationConfig};
 use crate::config::config::ShaiConfig;
 use crate::runners::coder::CoderBrain;
 use crate::tools::mcp::mcp_oauth::signin_oauth;
+use crate::tools::skills::SkillTool;
 use crate::tools::{
     create_mcp_client, create_tool, get_mcp_tools, AnyTool, FsOperationLog, McpConfig,
     McpServerStatus, TodoStorage, TOOL_NAMES,
 };
-use crate::tools::skills::SkillTool;
 
 use tracing::{debug, warn};
 
@@ -130,7 +130,14 @@ impl AgentBuilder {
 
         let tools: Vec<Box<dyn AnyTool>> = TOOL_NAMES
             .iter()
-            .filter_map(|name| create_tool(name, fs_log.clone(), todo_storage.clone(), &exclude_patterns))
+            .filter_map(|name| {
+                create_tool(
+                    name,
+                    fs_log.clone(),
+                    todo_storage.clone(),
+                    &exclude_patterns,
+                )
+            })
             .collect();
 
         (tools, todo_storage)
@@ -266,10 +273,17 @@ impl AgentBuilder {
     }
 
     /// Create tools from config
-async fn create_tools_from_config(
+    async fn create_tools_from_config(
         config: &mut AgentConfig,
         fs_log: Arc<FsOperationLog>,
-    ) -> Result<(Vec<Box<dyn AnyTool>>, Arc<TodoStorage>, Vec<McpServerStatus>), AgentError> {
+    ) -> Result<
+        (
+            Vec<Box<dyn AnyTool>>,
+            Arc<TodoStorage>,
+            Vec<McpServerStatus>,
+        ),
+        AgentError,
+    > {
         let mut tools: Vec<Box<dyn AnyTool>> = Vec::new();
         let mut mcp_status: Vec<McpServerStatus> = Vec::new();
 

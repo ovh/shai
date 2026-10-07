@@ -145,12 +145,13 @@ impl App<'_> {
         for message in trace {
             let formatted = match message {
                 ChatMessage::User { content, .. } => match content {
-                    ChatMessageContent::Text(text) => self
-                        .renderer
-                        .formatter()
-                        .format_event(&AgentEvent::UserInput {
-                            input: text.clone(),
-                        }),
+                    ChatMessageContent::Text(text) => {
+                        self.renderer
+                            .formatter()
+                            .format_event(&AgentEvent::UserInput {
+                                input: text.clone(),
+                            })
+                    }
                     _ => None,
                 },
                 ChatMessage::Assistant { content, .. } => {
@@ -387,8 +388,9 @@ impl App<'_> {
         // Show initial modal if requested
         match self.initial_modal {
             InitialModal::AgentPicker => {
-                self.ui_state.agent_picker =
-                    Some(super::agent_picker::AgentPicker::new(self.status_bar.palette()));
+                self.ui_state.agent_picker = Some(super::agent_picker::AgentPicker::new(
+                    self.status_bar.palette(),
+                ));
             }
             InitialModal::SessionPicker => {
                 let sessions =

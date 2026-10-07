@@ -289,8 +289,7 @@ impl CommandSuggestion {
                 .filter(|cmd| cmd.starts_with(prefix))
                 .map(|s| s.to_string())
                 .collect();
-            if filtered.is_empty() || (filtered.len() == all.len() && prefix == "/")
-            {
+            if filtered.is_empty() || (filtered.len() == all.len() && prefix == "/") {
                 self.suggestions = all.iter().map(|s| s.to_string()).collect();
             } else {
                 self.suggestions = filtered;

@@ -137,7 +137,10 @@ fn parse_binding(s: &str) -> Result<KeyBinding, String> {
             "" => {}
             _ => {
                 if key_part.is_some() {
-                    return Err(format!("unexpected token '{}' in key binding '{}'", part, s));
+                    return Err(format!(
+                        "unexpected token '{}' in key binding '{}'",
+                        part, s
+                    ));
                 }
                 key_part = Some(*part);
             }
@@ -393,10 +396,22 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = ShortcutsConfig::default();
-        assert_eq!(config.toggle_theme, KeyBinding::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
-        assert_eq!(config.exit, KeyBinding::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert_eq!(config.cancel_task, KeyBinding::new(KeyCode::Escape, KeyModifiers::NONE));
-        assert_eq!(config.cycle_agent_mode, KeyBinding::new(KeyCode::Tab, KeyModifiers::SHIFT));
+        assert_eq!(
+            config.toggle_theme,
+            KeyBinding::new(KeyCode::Char('t'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(
+            config.exit,
+            KeyBinding::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(
+            config.cancel_task,
+            KeyBinding::new(KeyCode::Escape, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            config.cycle_agent_mode,
+            KeyBinding::new(KeyCode::Tab, KeyModifiers::SHIFT)
+        );
     }
 
     #[test]
@@ -406,6 +421,9 @@ mod tests {
         let parsed: TuiConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.shortcuts.toggle_theme, parsed.shortcuts.toggle_theme);
         assert_eq!(config.shortcuts.exit, parsed.shortcuts.exit);
-        assert_eq!(config.shortcuts.cycle_agent_mode, parsed.shortcuts.cycle_agent_mode);
+        assert_eq!(
+            config.shortcuts.cycle_agent_mode,
+            parsed.shortcuts.cycle_agent_mode
+        );
     }
 }

@@ -57,7 +57,12 @@ impl ShaiSessionServer {
                         let pending_command = Arc::clone(&pending_command);
                         let output_buffer_size = output_buffer_size;
                         thread::spawn(move || {
-                            if let Err(e) = Self::handle_client(stream, history, pending_command, output_buffer_size) {
+                            if let Err(e) = Self::handle_client(
+                                stream,
+                                history,
+                                pending_command,
+                                output_buffer_size,
+                            ) {
                                 eprintln!("Error handling client: {}", e);
                             }
                         });
@@ -90,7 +95,8 @@ impl ShaiSessionServer {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let request = ShaiProtocol::read_request(&mut stream)?;
 
-        let response = Self::process_request(request, &history, &pending_command, output_buffer_size);
+        let response =
+            Self::process_request(request, &history, &pending_command, output_buffer_size);
         ShaiProtocol::write_response(&mut stream, &response)?;
 
         Ok(())

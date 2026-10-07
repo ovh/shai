@@ -33,7 +33,11 @@ impl HelpArea {
             } else {
                 format!(" <{}>", cmd.args.join("> <"))
             };
-            lines.push(format!("  {:<14} {}", format!("{}{}", cmd.name, args_suffix), cmd.description));
+            lines.push(format!(
+                "  {:<14} {}",
+                format!("{}{}", cmd.name, args_suffix),
+                cmd.description
+            ));
         }
 
         lines.push(String::new());

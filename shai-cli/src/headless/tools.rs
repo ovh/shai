@@ -100,12 +100,9 @@ impl ToolConfig {
         let fs_log = Arc::new(tools::FsOperationLog::new());
         let mut toolbox: Vec<Box<dyn AnyTool>> = Vec::new();
         for tool_name in &self.tools {
-            if let Some(tool) = tools::create_tool(
-                tool_name.name(),
-                fs_log.clone(),
-                todo_storage.clone(),
-                &[],
-            ) {
+            if let Some(tool) =
+                tools::create_tool(tool_name.name(), fs_log.clone(), todo_storage.clone(), &[])
+            {
                 toolbox.push(tool);
             }
         }

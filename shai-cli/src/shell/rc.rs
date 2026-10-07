@@ -399,8 +399,7 @@ pub fn write_to_shell_history(command: &str) {
             if let Err(_) = file.write_all(formatted_command.as_bytes()) {
                 return;
             }
-            if let Err(_) = file.flush() {
-            }
+            if let Err(_) = file.flush() {}
             //eprintln!("Added to history: {}", command.trim());
         }
     }

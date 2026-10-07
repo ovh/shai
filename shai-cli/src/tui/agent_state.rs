@@ -75,7 +75,9 @@ impl super::handler::AgentHandler for AgentState {
                 self.tool_tracker.complete_tool(call, result);
             }
             AgentEvent::PermissionRequired {
-                request_id, request, ..
+                request_id,
+                request,
+                ..
             } => {
                 self.permission_manager
                     .push(request_id.clone(), request.clone());
@@ -105,8 +107,8 @@ impl super::handler::AgentHandler for AgentState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::handler::AgentHandler;
+    use super::*;
     use shai_core::agent::events::PermissionRequest;
 
     use super::super::test_utils::make_tool_call;

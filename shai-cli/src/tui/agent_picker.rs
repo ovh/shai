@@ -93,11 +93,7 @@ impl AgentPicker {
     }
 
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
-        .split(area);
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
 
         let title = Line::from(vec![Span::styled(
             " Select Agent ",
@@ -146,14 +142,12 @@ impl AgentPicker {
                         format!("{:>2}. ", idx + 1),
                         Style::default().fg(self.palette.placeholder),
                     ),
-                    Span::styled(
-                        display_name,
-                        Style::default().fg(self.palette.input_text),
-                    ),
+                    Span::styled(display_name, Style::default().fg(self.palette.input_text)),
                 ]);
 
                 if idx == self.selected {
-                    ListItem::new(line).style(Style::default().bg(self.palette.suggestion_selected_bg))
+                    ListItem::new(line)
+                        .style(Style::default().bg(self.palette.suggestion_selected_bg))
                 } else {
                     ListItem::new(line)
                 }

@@ -7,13 +7,13 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph},
     Frame,
 };
+use ratatui_textarea::TextArea;
 use shai_core::config::config::ShaiConfig;
 use shai_llm::client::LlmClient;
 use shai_llm::provider::ProviderInfo;
 use std::collections::HashMap;
 use std::io;
 use tokio::task::JoinHandle;
-use ratatui_textarea::TextArea;
 
 use super::auth::NavAction;
 

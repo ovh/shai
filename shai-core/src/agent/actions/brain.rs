@@ -120,7 +120,12 @@ impl AgentCore {
         let tool_calls_from_brain = tool_calls.unwrap_or(vec![]);
         if !tool_calls_from_brain.is_empty() {
             // Check max tool calls per turn limit
-            if !self.tool_ctx.tool_budget.try_increment(tool_calls_from_brain.len()).await {
+            if !self
+                .tool_ctx
+                .tool_budget
+                .try_increment(tool_calls_from_brain.len())
+                .await
+            {
                 let max_tool_calls = self.tool_ctx.tool_budget.max_calls.unwrap();
                 // Inject a wrap-up message for each tool call to satisfy the LLM's tool_call_id requirements
                 let wrap_up = format!(

@@ -11,13 +11,13 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Widget},
     Frame,
 };
-use shai_llm::ToolCallMethod;
 use ratatui_textarea::{Input as TextInput, TextArea};
+use shai_llm::ToolCallMethod;
 
 use crate::tui::helper::HelpArea;
 
-use super::suggestion::{CommandSuggestion, FileSuggestion};
 use super::shortcuts::key_event_to_binding;
+use super::suggestion::{CommandSuggestion, FileSuggestion};
 use super::theme::ThemePalette;
 use shai_core::config::tui::KeyBinding;
 
@@ -32,7 +32,7 @@ impl AgentMode {
     pub fn status_bar_str(&self) -> String {
         let symbol = match self {
             AgentMode::Plan => "\u{2612}",   // ☒
-            AgentMode::Manual => "\u{2610}",  // ☐
+            AgentMode::Manual => "\u{2610}", // ☐
             AgentMode::Auto => "\u{2611}",   // ☑
         };
         format!("{} {:?}", symbol, self)
@@ -273,7 +273,8 @@ impl InputArea<'_> {
         }
         if let Some(last_line) = self.input.lines().last() {
             for _ in 0..last_line.len() {
-                self.input.move_cursor(ratatui_textarea::CursorMove::Forward);
+                self.input
+                    .move_cursor(ratatui_textarea::CursorMove::Forward);
             }
         }
     }
@@ -295,7 +296,8 @@ impl InputArea<'_> {
 
             self.input.move_cursor(ratatui_textarea::CursorMove::Head);
             for _ in 0..at_pos {
-                self.input.move_cursor(ratatui_textarea::CursorMove::Forward);
+                self.input
+                    .move_cursor(ratatui_textarea::CursorMove::Forward);
             }
 
             for _ in 0..chars_to_delete {

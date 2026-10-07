@@ -202,61 +202,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Auth) => {
             handle_config().await?;
         }
-        Some(Commands::Agent { name }) => {
-            match name.as_deref() {
-                Some("list") => {
-                    list_agents();
-                }
-                Some(name) => {
-                    handle_main(Some(name.to_string()), None, None).await?;
-                }
-                None => {
-                    handle_main(None, None, Some(tui::app::InitialModal::AgentPicker))
-                        .await?;
-                }
+        Some(Commands::Agent { name }) => match name.as_deref() {
+            Some("list") => {
+                list_agents();
             }
-        }
-        Some(Commands::Session { id }) => {
-            match id.as_deref() {
-                Some("latest") => {
-                    let restore_id = match shai_core::session::SessionPersist::list_sessions() {
-                        Ok(sessions) if !sessions.is_empty() => {
-                            Some(sessions[0].session_id.clone())
-                        }
-                        _ => {
-                            eprintln!("No previous session found.");
-                            return Ok(());
-                        }
-                    };
-                    handle_main(None, restore_id, None).await?;
-                }
-                Some(id) => {
-                    handle_main(None, Some(id.to_string()), None).await?;
-                }
-                None => {
-                    handle_main(
-                        None,
-                        None,
-                        Some(tui::app::InitialModal::SessionPicker),
-                    )
-                    .await?;
-                }
+            Some(name) => {
+                handle_main(Some(name.to_string()), None, None).await?;
             }
-        }
-        Some(Commands::List { what }) => {
-            match what {
-                Some(ListTarget::Agent) => list_agents(),
-                Some(ListTarget::Session) => list_sessions(),
-                Some(ListTarget::Skills) => list_skills(),
-                None => {
-                    list_agents();
-                    println!();
-                    list_sessions();
-                    println!();
-                    list_skills();
-                }
+            None => {
+                handle_main(None, None, Some(tui::app::InitialModal::AgentPicker)).await?;
             }
-        }
+        },
+        Some(Commands::Session { id }) => match id.as_deref() {
+            Some("latest") => {
+                let restore_id = match shai_core::session::SessionPersist::list_sessions() {
+                    Ok(sessions) if !sessions.is_empty() => Some(sessions[0].session_id.clone()),
+                    _ => {
+                        eprintln!("No previous session found.");
+                        return Ok(());
+                    }
+                };
+                handle_main(None, restore_id, None).await?;
+            }
+            Some(id) => {
+                handle_main(None, Some(id.to_string()), None).await?;
+            }
+            None => {
+                handle_main(None, None, Some(tui::app::InitialModal::SessionPicker)).await?;
+            }
+        },
+        Some(Commands::List { what }) => match what {
+            Some(ListTarget::Agent) => list_agents(),
+            Some(ListTarget::Session) => list_sessions(),
+            Some(ListTarget::Skills) => list_skills(),
+            None => {
+                list_agents();
+                println!();
+                list_sessions();
+                println!();
+                list_skills();
+            }
+        },
         #[cfg(unix)]
         Some(Commands::Precmd { command }) => {
             let command_str = command.join(" ");
@@ -343,9 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // No input, show TUI
             let restore_id = if cli.latest {
                 match shai_core::session::SessionPersist::list_sessions() {
-                    Ok(sessions) if !sessions.is_empty() => {
-                        Some(sessions[0].session_id.clone())
-                    }
+                    Ok(sessions) if !sessions.is_empty() => Some(sessions[0].session_id.clone()),
                     _ => {
                         eprintln!("No previous session found.");
                         return Ok(());

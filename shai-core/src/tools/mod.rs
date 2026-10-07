@@ -1,7 +1,7 @@
 pub mod bash;
 pub mod fetch;
-pub mod fs;
 pub mod frontmatter;
+pub mod fs;
 pub mod highlight;
 pub mod mcp;
 pub mod memory;
