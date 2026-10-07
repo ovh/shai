@@ -16,10 +16,6 @@ impl FileEventLogger {
         }
     }
 
-    pub fn default() -> Self {
-        Self::new("agent_events.log")
-    }
-
     fn write_event(&self, event: &AgentEvent) {
         let timestamp = Utc::now();
         let event_str = match event {
@@ -29,9 +25,7 @@ impl FileEventLogger {
             } => {
                 format!("StatusChanged: {:?} -> {:?}", old_status, new_status)
             }
-            AgentEvent::ThinkingStart => {
-                format!("ThinkingStart")
-            }
+            AgentEvent::ThinkingStart => "ThinkingStart".to_string(),
             AgentEvent::BrainResult {
                 timestamp: event_time,
                 thought,
@@ -120,6 +114,6 @@ impl AgentEventHandler for FileEventLogger {
 
 impl Default for FileEventLogger {
     fn default() -> Self {
-        Self::default()
+        Self::new("agent_events.log")
     }
 }

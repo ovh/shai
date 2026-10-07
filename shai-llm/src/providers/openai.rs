@@ -24,9 +24,7 @@ impl OpenAIProvider {
     /// Create OpenAI provider from environment variables
     /// Returns None if required environment variables are not set
     pub fn from_env() -> Option<Self> {
-        std::env::var("OPENAI_API_KEY")
-            .ok()
-            .map(|api_key| Self::new(api_key))
+        std::env::var("OPENAI_API_KEY").ok().map(Self::new)
     }
 }
 

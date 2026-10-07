@@ -108,7 +108,7 @@ impl Brain for CoderBrain {
         if let Some(soft_budget) = budget.soft_limit {
             if tool_calls >= soft_budget {
                 // Critical notice every 5 calls once soft budget is exceeded
-                if tool_calls == soft_budget || (tool_calls - soft_budget) % 5 == 0 {
+                if tool_calls == soft_budget || (tool_calls - soft_budget).is_multiple_of(5) {
                     system_prompt_full += "\n\n--- CRITICAL ---\n";
                     system_prompt_full += &format!(
                         "You have made {} tool calls — you may be going too deep. Step back and assess whether you already have the information you need.",
@@ -127,7 +127,7 @@ impl Brain for CoderBrain {
                     "You have used {}/{} tool calls. Be efficient with your remaining calls.",
                     tool_calls, soft_budget
                 );
-            } else if tool_calls > 0 && tool_calls % 5 == 0 {
+            } else if tool_calls > 0 && tool_calls.is_multiple_of(5) {
                 // Gentle reminder every 5 calls below soft budget
                 system_prompt_full += "\n\n--- Progress Checkpoint ---\n";
                 system_prompt_full += &format!(
@@ -137,7 +137,7 @@ impl Brain for CoderBrain {
             }
         } else {
             // No soft budget configured — use periodic checkpoint every 10 calls
-            if tool_calls > 0 && tool_calls % 10 == 0 {
+            if tool_calls > 0 && tool_calls.is_multiple_of(10) {
                 system_prompt_full += "\n\n--- Progress Checkpoint ---\n";
                 system_prompt_full += &format!(
                     "You have made {} tool calls so far. Briefly assess your progress: what have you accomplished, what remains, and what is the most efficient path forward?",
@@ -190,7 +190,7 @@ impl Brain for CoderBrain {
         // stop here if there's no other tool calls
         let message = brain_decision.choices.into_iter().next().unwrap().message;
         if let ChatMessage::Assistant { tool_calls, .. } = &message {
-            if tool_calls.as_ref().map_or(true, |calls| calls.is_empty()) {
+            if tool_calls.as_ref().is_none_or(|calls| calls.is_empty()) {
                 return Ok(match token_usage {
                     Some((input_tokens, output_tokens, cached_tokens)) => {
                         ThinkerDecision::agent_pause_with_tokens(

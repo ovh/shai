@@ -1,4 +1,6 @@
 #![allow(clippy::module_inception)]
+// async_trait-generated futures trip double_must_use on methods returning Result
+#![allow(clippy::double_must_use)]
 pub mod chat;
 pub mod client;
 pub mod logging;

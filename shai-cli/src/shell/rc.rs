@@ -396,10 +396,10 @@ pub fn write_to_shell_history(command: &str) {
             .open(&history_file)
         {
             let formatted_command = format_command_for_shell(&shell_type, command);
-            if let Err(_) = file.write_all(formatted_command.as_bytes()) {
+            if file.write_all(formatted_command.as_bytes()).is_err() {
                 return;
             }
-            if let Err(_) = file.flush() {}
+            if file.flush().is_err() {}
             //eprintln!("Added to history: {}", command.trim());
         }
     }

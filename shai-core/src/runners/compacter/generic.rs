@@ -46,7 +46,7 @@ fn collapse_duplicate_lines(input: &str) -> String {
             result.push_str(line);
         }
 
-        if let Some(_) = iter.peek() {
+        if iter.peek().is_some() {
             result.push('\n');
         }
     }

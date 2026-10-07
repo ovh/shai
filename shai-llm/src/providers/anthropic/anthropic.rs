@@ -30,9 +30,7 @@ impl AnthropicProvider {
     /// Create Anthropic provider from environment variables
     /// Returns None if required environment variables are not set
     pub fn from_env() -> Option<Self> {
-        std::env::var("ANTHROPIC_API_KEY")
-            .ok()
-            .map(|api_key| Self::new(api_key))
+        std::env::var("ANTHROPIC_API_KEY").ok().map(Self::new)
     }
 
     async fn parse_anthropic_stream(response: reqwest::Response) -> Result<LlmStream, LlmError> {
@@ -46,7 +44,7 @@ impl AnthropicProvider {
                 }
                 Err(e) => vec![Err(Box::new(e) as LlmError)],
             })
-            .flat_map(|results| stream::iter(results));
+            .flat_map(stream::iter);
 
         Ok(Box::new(Box::pin(parsed_stream)))
     }
@@ -59,10 +57,10 @@ impl AnthropicProvider {
         for line in chunk.lines() {
             let line = line.trim();
 
-            if line.starts_with("event: ") {
-                current_event_type = Some(line[7..].to_string());
-            } else if line.starts_with("data: ") {
-                current_data = line[6..].to_string();
+            if let Some(event_type) = line.strip_prefix("event: ") {
+                current_event_type = Some(event_type.to_string());
+            } else if let Some(data) = line.strip_prefix("data: ") {
+                current_data = data.to_string();
             } else if line.is_empty() && current_event_type.is_some() {
                 // End of SSE event
                 if let Some(event_type) = current_event_type.take() {
@@ -497,7 +495,7 @@ impl LlmProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post(&format!("{}/messages", ANTHROPIC_API_BASE))
+            .post(format!("{}/messages", ANTHROPIC_API_BASE))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
@@ -521,7 +519,7 @@ impl LlmProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post(&format!("{}/messages", ANTHROPIC_API_BASE))
+            .post(format!("{}/messages", ANTHROPIC_API_BASE))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")

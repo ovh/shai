@@ -147,9 +147,9 @@ impl ReadTool {
 
         // Add truncation footer
         let last_line = offset + lines.len() - 1;
-        let truncated = lines.len() == limit as usize || (lines.len() as u32) < total_lines as u32;
+        let truncated = lines.len() == limit || (lines.len() as u32) < total_lines as u32;
         if truncated {
-            if lines.len() == limit as usize {
+            if lines.len() == limit {
                 output.push_str(&format!(
                     "\n\n(Showing lines {}-{} of {}. Use offset={} to continue.)",
                     offset,

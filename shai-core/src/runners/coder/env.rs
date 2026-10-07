@@ -161,9 +161,9 @@ pub fn find_git_root() -> Option<PathBuf> {
         if current.join(".git").exists() {
             return Some(current.to_path_buf());
         }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => return None,
+        {
+            let parent = current.parent()?;
+            current = parent
         }
     }
 }

@@ -42,13 +42,11 @@ impl SleepingTool {
     description = "A tool that sleeps for a specified duration"
 )]
 impl SleepingTool {
-    async fn execute(&self, params: SleepParams) -> ToolResult {
+    async fn execute(&self, _params: SleepParams) -> ToolResult {
         tokio::time::sleep(Duration::from_millis(self.duration_ms)).await;
         ToolResult::success("Finished sleeping".to_string())
     }
 }
-
-struct MockLlm {}
 
 // Test thinker that calls the sleeping tool once then completes
 struct SleepingThinker {
@@ -97,64 +95,6 @@ impl Brain for SleepingThinker {
                 audio: None,
                 refusal: None,
             }))
-        }
-    }
-}
-
-// Test thinker that can be paused and resumed without completing
-struct PausableThinker {
-    call_count: u32,
-}
-
-impl PausableThinker {
-    fn new() -> Self {
-        Self { call_count: 0 }
-    }
-}
-
-#[async_trait]
-impl Brain for PausableThinker {
-    async fn next_step(
-        &mut self,
-        _: ThinkerContext,
-        _: ToolBudgetRef,
-    ) -> Result<ThinkerDecision, AgentError> {
-        self.call_count += 1;
-
-        match self.call_count {
-            1 => {
-                // First call - use the sleeping tool
-                Ok(ThinkerDecision::agent_continue(ChatMessage::Assistant {
-                    content: None,
-                    reasoning: None,
-                    reasoning_content: None,
-                    tool_calls: Some(vec![ToolCall {
-                        id: "call_1".to_string(),
-                        r#type: "function".to_string(),
-                        function: Function {
-                            name: "sleeping_tool".to_string(),
-                            arguments: "{}".to_string(),
-                        },
-                    }]),
-                    name: None,
-                    audio: None,
-                    refusal: None,
-                }))
-            }
-            _ => {
-                // Two tool calls completed - finish
-                Ok(ThinkerDecision::agent_pause(ChatMessage::Assistant {
-                    content: Some(ChatMessageContent::Text(
-                        "Finished after pause/resume".to_string(),
-                    )),
-                    reasoning: None,
-                    reasoning_content: None,
-                    tool_calls: None,
-                    name: None,
-                    audio: None,
-                    refusal: None,
-                }))
-            }
         }
     }
 }

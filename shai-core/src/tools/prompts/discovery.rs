@@ -63,7 +63,7 @@ fn discover_prompts_in_dir(dir: &Path) -> Vec<PromptInfo> {
             continue;
         }
 
-        if path.extension().map_or(false, |ext| ext == "md") {
+        if path.extension().is_some_and(|ext| ext == "md") {
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
                 Err(_) => continue,

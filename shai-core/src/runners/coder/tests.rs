@@ -44,7 +44,7 @@ async fn create_coder_agent_with_goal(goal: &str) -> impl Agent {
 
 #[tokio::test]
 async fn test_coder_brain_creation() {
-    let (llm_client, model) = get_llm().await.expect("No LLM provider available");
+    let (_llm_client, _model) = get_llm().await.expect("No LLM provider available");
     let llm_client = Arc::new(LlmClient::first_from_env().expect("No LLM provider available"));
     let model = llm_client.default_model().await.expect("default model");
 
@@ -180,7 +180,7 @@ async fn test_multi_turn_conversation() {
     ////////////// TURN 1
     // Run the agent with stdout event streaming
     println!("> {}", goal);
-    let result = tokio::spawn(async move {
+    let _result = tokio::spawn(async move {
         agent
             .with_event_handler(StdoutEventManager::new())
             .run()
@@ -209,7 +209,7 @@ async fn test_multi_turn_conversation() {
     );
 
     ////////////// TURN 2
-    println!("> {}", "modify the file so that the text output in green");
+    println!("> modify the file so that the text output in green");
     let _ = controller
         .send_user_input("I want the text to be output in green".to_string())
         .await;

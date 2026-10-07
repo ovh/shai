@@ -26,7 +26,7 @@ mod llm_integration_tests {
 
         println!(
             "Testing tool '{}' with model '{}' from provider '{}'",
-            &tool.name(),
+            tool.name(),
             model,
             llm_client.provider_name()
         );
@@ -35,7 +35,7 @@ mod llm_integration_tests {
         let messages = vec![
             ChatMessage::System {
                 content: ChatMessageContent::Text(
-                    format!("You are a helpful assistant. You must absolutely use the {} tool to respond to the user's request. Do not explain or apologize, just use the tool.", &tool.name())
+                    format!("You are a helpful assistant. You must absolutely use the {} tool to respond to the user's request. Do not explain or apologize, just use the tool.", tool.name())
                 ),
                 name: None,
             },
@@ -90,11 +90,11 @@ mod llm_integration_tests {
                     if tool_was_called {
                         println!(
                             "✅ Tool '{}' PASSED with provider '{}'",
-                            &tool.name(),
+                            tool.name(),
                             llm_client.provider_name()
                         );
                     } else {
-                        println!("❌ Tool '{}' FAILED - tool not called", &tool.name());
+                        println!("❌ Tool '{}' FAILED - tool not called", tool.name());
                     }
                     return Ok(tool_was_called);
                 } else {
@@ -109,7 +109,7 @@ mod llm_integration_tests {
 
         println!(
             "❌ Tool '{}' FAILED - no tool calls in response",
-            &tool.name()
+            tool.name()
         );
         Ok(false)
     }

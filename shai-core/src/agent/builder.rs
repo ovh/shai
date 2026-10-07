@@ -243,10 +243,7 @@ impl AgentBuilder {
 
         for tool in &tools {
             let group_name = tool.group().unwrap_or("unknown").to_string();
-            tool_groups
-                .entry(group_name)
-                .or_insert_with(Vec::new)
-                .push(tool.name());
+            tool_groups.entry(group_name).or_default().push(tool.name());
         }
 
         // Display builtin tools first
@@ -292,7 +289,7 @@ impl AgentBuilder {
 
         // Add builtin tools based on config
         let builtin_tools_to_add = if config.tools.builtin.contains(&"*".to_string()) {
-            TOOL_NAMES.iter().map(|s| *s).collect::<Vec<_>>()
+            TOOL_NAMES.to_vec()
         } else {
             // Add only specified tools
             config.tools.builtin.iter().map(|s| s.as_str()).collect()

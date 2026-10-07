@@ -16,7 +16,7 @@ impl AgentCore {
         let trace = self.tool_ctx.trace.read().await.clone();
         let tx_clone = self.tool_ctx.internal_tx.clone();
         let available_tools = self.tool_ctx.available_tools.clone();
-        let method = self.method.clone();
+        let method = self.method;
         let max_trace_chars = self.tool_ctx.compaction_config.max_trace_chars;
         let temperature = *self.temperature.read().await;
         let is_plan_mode = self.tool_ctx.claims.read().await.is_plan_mode();

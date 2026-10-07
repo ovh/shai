@@ -431,7 +431,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .current_dir(working_dir)
             .output();
 
-        if commit.map_or(false, |c| c.status.success()) {
+        if commit.is_ok_and(|c| c.status.success()) {
             eprintln!("░ Git baseline committed");
         } else {
             eprintln!("⚠ Failed to commit git baseline");
@@ -442,8 +442,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let log_dir = fixture_dir
-            .as_ref()
-            .map(|d| d.as_path())
+            .as_deref()
             .unwrap_or_else(|| std::path::Path::new("."));
         let log_writer = tracing_appender::rolling::never(log_dir, "runtime.log");
         let _ = tracing_subscriber::registry()

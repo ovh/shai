@@ -114,7 +114,7 @@ impl AgentCore {
                     // Emit tool call started event
                     if let Some(tx) = public_event_tx.clone() {
                         let _ = tx.send(AgentEvent::ToolCallStarted {
-                            timestamp: start.clone(),
+                            timestamp: start,
                             call: call.clone(),
                         });
                     }
@@ -310,7 +310,7 @@ impl AgentCore {
                             },
                         );
                     }
-                    let _ = {
+                    {
                         trace.write().await.push(ChatMessage::Tool {
                             tool_call_id: call.tool_call_id.clone(),
                             content: ChatMessageContent::Text(compacted_output.clone()),
@@ -323,7 +323,7 @@ impl AgentCore {
                     if let Some(tx) = public_event_tx.clone() {
                         let _ = tx.send(AgentEvent::ToolCallCompleted {
                             duration: Utc::now() - start,
-                            call: call,
+                            call,
                             result,
                             original_bytes: raw_output.len(),
                             compacted_bytes: compacted_output.len(),
@@ -359,7 +359,7 @@ impl AgentCore {
             // Plan mode allows all tools (the system prompt prevents writes)
             // Sudo mode allows all tools without asking
             let can_run = tool.capabilities().is_empty()
-                || tool.capabilities() == &[ToolCapability::Read]
+                || tool.capabilities() == [ToolCapability::Read]
                 || claims.read().await.is_sudo()
                 || claims.read().await.is_plan_mode();
 

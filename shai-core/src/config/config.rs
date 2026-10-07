@@ -134,9 +134,7 @@ impl ShaiConfig {
     }
 
     fn validate_provider(&mut self) {
-        if self.providers.is_empty() {
-            self.selected_provider = 0;
-        } else if self.selected_provider >= self.providers.len() {
+        if self.providers.is_empty() || self.selected_provider >= self.providers.len() {
             self.selected_provider = 0;
         }
     }
