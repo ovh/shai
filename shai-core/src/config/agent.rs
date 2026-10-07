@@ -135,28 +135,52 @@ fn default_verification_timeout_secs() -> u64 {
 
 fn default_verification_commands() -> HashMap<String, Vec<String>> {
     let mut commands = HashMap::new();
+    // Project-scoped verifiers: run once, no file arguments
     commands.insert("rust".to_string(), vec!["cargo".into(), "check".into()]);
     commands.insert(
         "go".to_string(),
         vec!["go".into(), "build".into(), "./...".into()],
     );
+    // Per-file verifiers: `{files}` is replaced with each edited file and the
+    // command runs once per file (several of these only check the first file
+    // argument when given many)
     commands.insert(
         "python".to_string(),
-        vec!["python".into(), "-m".into(), "py_compile".into()],
+        vec![
+            "python".into(),
+            "-m".into(),
+            "py_compile".into(),
+            "{files}".into(),
+        ],
     );
     commands.insert(
         "typescript".to_string(),
-        vec!["node".into(), "--check".into()],
+        vec!["node".into(), "--check".into(), "{files}".into()],
     );
     commands.insert(
         "javascript".to_string(),
-        vec!["node".into(), "--check".into()],
+        vec!["node".into(), "--check".into(), "{files}".into()],
     );
-    commands.insert("perl".to_string(), vec!["perl".into(), "-c".into()]);
-    commands.insert("ruby".to_string(), vec!["ruby".into(), "-c".into()]);
-    commands.insert("bash".to_string(), vec!["bash".into(), "-n".into()]);
-    commands.insert("php".to_string(), vec!["php".into(), "-l".into()]);
-    commands.insert("lua".to_string(), vec!["luac".into(), "-p".into()]);
+    commands.insert(
+        "perl".to_string(),
+        vec!["perl".into(), "-c".into(), "{files}".into()],
+    );
+    commands.insert(
+        "ruby".to_string(),
+        vec!["ruby".into(), "-c".into(), "{files}".into()],
+    );
+    commands.insert(
+        "bash".to_string(),
+        vec!["bash".into(), "-n".into(), "{files}".into()],
+    );
+    commands.insert(
+        "php".to_string(),
+        vec!["php".into(), "-l".into(), "{files}".into()],
+    );
+    commands.insert(
+        "lua".to_string(),
+        vec!["luac".into(), "-p".into(), "{files}".into()],
+    );
     commands
 }
 

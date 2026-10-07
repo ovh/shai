@@ -22,9 +22,14 @@ impl AgentCore {
                         )
                         .await
                         {
-                            self.tool_ctx.trace.write().await.push(ChatMessage::Tool {
-                                tool_call_id: "verification".to_string(),
-                                content: ChatMessageContent::Text(diagnostics),
+                            // Inject as a System message: a Tool message would need a
+                            // matching assistant tool_call id, which providers validate
+                            self.tool_ctx.trace.write().await.push(ChatMessage::System {
+                                content: ChatMessageContent::Text(format!(
+                                    "Post-edit verification reported diagnostics:\n\n{}",
+                                    diagnostics
+                                )),
+                                name: None,
                             });
                         }
                     }
