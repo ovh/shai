@@ -27,7 +27,7 @@ Previous versions of Shai used `{name}.config` (without `.json` extension). If `
   "llm_provider": {
     "provider": "ovhcloud",
     "env_vars": {
-      "OVHAI_API_KEY": "your-api-key"
+      "OVH_API_KEY": "your-api-key"
     },
     "model": "qwen3-32b-instruct",
     "tool_method": "function_call"

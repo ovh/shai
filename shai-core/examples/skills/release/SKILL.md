@@ -22,7 +22,8 @@ Update the version in **all** crate manifests:
 1. `shai-cli/Cargo.toml`
 2. `shai-core/Cargo.toml`
 3. `shai-llm/Cargo.toml`
-4. `shai-macros/Cargo.toml`
+4. `shai-http/Cargo.toml`
+5. `shai-macros/Cargo.toml`
 
 ### 3. Verify the Build
 ```bash

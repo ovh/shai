@@ -12,7 +12,19 @@ use super::command::CommandRegistry;
 use super::theme::ThemePalette;
 use shai_core::config::tui::{KeyBinding, TuiConfig};
 
-pub struct HelpArea;
+pub struct HelpArea {
+    config: TuiConfig,
+}
+
+impl HelpArea {
+    /// Load the active configuration once so the help panel shows the
+    /// bindings actually in use (config file / legacy env vars), not defaults.
+    pub fn new() -> Self {
+        Self {
+            config: TuiConfig::load(),
+        }
+    }
+}
 
 fn format_binding(binding: &KeyBinding) -> String {
     binding.to_string()
@@ -44,8 +56,7 @@ impl HelpArea {
         lines.push(String::new());
         lines.push("  Shortcuts:".to_string());
 
-        let config = TuiConfig::default();
-        let s = &config.shortcuts;
+        let s = &self.config.shortcuts;
         let bindings: [(&str, &str); 10] = [
             ("toggle_theme", "toggle dark/light theme"),
             ("clear_screen", "clear screen / reset viewport"),

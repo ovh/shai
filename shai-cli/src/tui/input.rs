@@ -370,7 +370,7 @@ impl InputArea<'_> {
 
         match key_event.code {
             KeyCode::Char('?') if self.input.lines()[0].is_empty() && self.help.is_none() => {
-                self.help = Some(HelpArea);
+                self.help = Some(HelpArea::new());
             }
             KeyCode::Enter => {
                 // Alt+Enter creates a new line immediately

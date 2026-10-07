@@ -274,16 +274,25 @@ impl TuiConfig {
 
     pub fn load() -> Self {
         let Ok(path) = Self::config_path() else {
-            return Self::from_env_or_default();
+            return Self::from_env_or_default().0;
         };
 
         if !path.exists() {
-            return Self::from_env_or_default();
+            let (config, from_env) = Self::from_env_or_default();
+            if from_env {
+                // One-time migration: persist the env-derived config so the
+                // deprecated variables are only read once and the file
+                // becomes the single source of truth
+                if let Ok(json) = serde_json::to_string_pretty(&config) {
+                    let _ = std::fs::write(&path, json);
+                }
+            }
+            return config;
         }
 
         let content = match std::fs::read(&path) {
             Ok(content) => content,
-            Err(_) => return Self::from_env_or_default(),
+            Err(_) => return Self::from_env_or_default().0,
         };
 
         let stripped = json_comments::StripComments::new(&content[..]);
@@ -292,46 +301,59 @@ impl TuiConfig {
 
     /// Build config from `SHAI_KEY_*` / `SHAI_TUI_THEME` environment variables,
     /// falling back to defaults. Only used when `tui.config.json` does not exist.
-    fn from_env_or_default() -> Self {
+    /// Returns the config and whether at least one legacy variable was found.
+    fn from_env_or_default() -> (Self, bool) {
+        let mut from_env = false;
         let theme = match std::env::var("SHAI_TUI_THEME") {
-            Ok(val) => match val.to_lowercase().as_str() {
-                "light" => ThemePreference::Light,
-                "dark" => ThemePreference::Dark,
-                _ => ThemePreference::default(),
-            },
+            Ok(val) => {
+                from_env = true;
+                match val.to_lowercase().as_str() {
+                    "light" => ThemePreference::Light,
+                    "dark" => ThemePreference::Dark,
+                    _ => ThemePreference::default(),
+                }
+            }
             Err(_) => ThemePreference::default(),
         };
         let mut shortcuts = ShortcutsConfig::default();
         if let Ok(val) = std::env::var("SHAI_KEY_TOGGLE_THEME") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.toggle_theme = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_EXIT") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.exit = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_CANCEL_TASK") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.cancel_task = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_CLEAR_INPUT") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.clear_input = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_PASTE") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.paste = kb;
+                from_env = true;
             }
         }
-        Self {
-            shortcuts,
-            theme,
-            markdown_skin: None,
-        }
+        (
+            Self {
+                shortcuts,
+                theme,
+                markdown_skin: None,
+            },
+            from_env,
+        )
     }
 }
 
@@ -491,5 +513,54 @@ mod tests {
         assert_eq!(parsed.theme, ThemePreference::Dark);
         assert_eq!(parsed.markdown_skin, None);
         assert_eq!(parsed.markdown_skin(), ThemePreference::Dark);
+    }
+
+    const LEGACY_ENV_VARS: &[&str] = &[
+        "SHAI_KEY_TOGGLE_THEME",
+        "SHAI_KEY_EXIT",
+        "SHAI_KEY_CANCEL_TASK",
+        "SHAI_KEY_CLEAR_INPUT",
+        "SHAI_KEY_PASTE",
+        "SHAI_TUI_THEME",
+    ];
+
+    #[test]
+    fn test_env_derived_config_is_persisted() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", temp.path());
+        for var in LEGACY_ENV_VARS {
+            std::env::remove_var(var);
+        }
+
+        // No legacy env vars: nothing is written
+        let _ = TuiConfig::load();
+        let config_file = temp.path().join("shai").join("tui.config.json");
+        assert!(!config_file.exists());
+
+        // Legacy env vars present: config is derived and persisted once
+        std::env::set_var("SHAI_KEY_EXIT", "ctrl+e");
+        std::env::set_var("SHAI_TUI_THEME", "light");
+        let config = TuiConfig::load();
+        assert_eq!(
+            config.shortcuts.exit,
+            KeyBinding::new(KeyCode::Char('e'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(config.theme, ThemePreference::Light);
+
+        assert!(config_file.exists());
+        let on_disk: TuiConfig =
+            serde_json::from_str(&std::fs::read_to_string(&config_file).unwrap()).unwrap();
+        assert_eq!(on_disk.shortcuts.exit, config.shortcuts.exit);
+        assert_eq!(on_disk.theme, ThemePreference::Light);
+
+        // Cleanup
+        for var in LEGACY_ENV_VARS {
+            std::env::remove_var(var);
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 }

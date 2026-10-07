@@ -74,7 +74,7 @@ When using `-p` with cargo commands, always use the package name (e.g., `cargo b
 
 ## Release Process
 
-1. Update the version in all `Cargo.toml` files (`shai-cli`, `shai-core`, `shai-llm`, `shai-macros`).
+1. Update the version in all `Cargo.toml` files (`shai-cli`, `shai-core`, `shai-llm`, `shai-http`, `shai-macros`).
 2. Run `cargo check` and `cargo test` to verify.
 3. Commit with `chore: release vX.Y.Z`.
 4. Tag with `vX.Y.Z` and push.

@@ -37,15 +37,17 @@ impl RenderManager {
 impl AgentHandler for RenderManager {
     async fn handle_event(&mut self, event: &AgentEvent) {
         let stick = self.history.at_bottom();
-        if let Some(formatted) = self.formatter.format_event(event) {
-            self.history.add_text(&formatted);
-            if stick {
-                self.history.scroll_to_bottom();
+        let formatted = self.formatter.format_event(event).or_else(|| {
+            // Fallback only if the formatter has no representation for the event
+            match event {
+                AgentEvent::Error { error } => {
+                    Some(format!("\x1b[31m\u{2718} Error: {}\x1b[0m", error))
+                }
+                _ => None,
             }
-        }
-        if let AgentEvent::Error { error } = event {
-            let error_msg = format!("\x1b[31m\u{2718} Error: {}\x1b[0m", error);
-            self.history.add_text(&error_msg);
+        });
+        if let Some(text) = formatted {
+            self.history.add_text(&text);
             if stick {
                 self.history.scroll_to_bottom();
             }
@@ -65,6 +67,17 @@ mod tests {
         };
         renderer.handle_event(&event).await;
         assert!(renderer.history().at_bottom());
+    }
+
+    #[tokio::test]
+    async fn test_error_event_rendered_only_once() {
+        let mut renderer = RenderManager::new();
+        let event = AgentEvent::Error {
+            error: "test error".to_string(),
+        };
+        renderer.handle_event(&event).await;
+        let raw = renderer.history().raw_text();
+        assert_eq!(raw.matches("test error").count(), 1);
     }
 
     #[tokio::test]

@@ -113,7 +113,7 @@ The following slash commands are available in the TUI:
 
 Previous versions of Shai supported `SHAI_KEY_*` environment variables for shortcut customization. These are now deprecated. Env vars are **only** read when `tui.config.json` does not exist — if the config file is present, env vars are ignored entirely.
 
-To migrate, create a `tui.config.json` file with your custom bindings.
+If legacy env vars are set and no config file exists yet, shai creates `tui.config.json` from them on first launch. To migrate manually instead, create a `tui.config.json` file with your custom bindings.
 
 | Env var | Config equivalent |
 |---------|----------|
