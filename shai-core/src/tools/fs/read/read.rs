@@ -100,7 +100,8 @@ impl ReadTool {
         let file = fs::File::open(&params.path)?;
         let reader = BufReader::new(file);
 
-        let mut lines: Vec<(u32, String)> = Vec::new();
+        // (line number, original content, display content)
+        let mut lines: Vec<(u32, String, String)> = Vec::new();
         let mut total_lines = 0usize;
         let mut bytes_written = 0usize;
 
@@ -116,31 +117,47 @@ impl ReadTool {
             }
 
             let line = line_result?;
-            let truncated = if line.len() > MAX_LINE_LENGTH {
+            let display = if line.len() > MAX_LINE_LENGTH {
                 format!(
                     "{}{}",
                     line.chars().take(MAX_LINE_LENGTH).collect::<String>(),
                     MAX_LINE_SUFFIX
                 )
             } else {
-                line
+                line.clone()
             };
 
-            let line_size = truncated.len();
+            let line_size = display.len();
             if bytes_written + line_size > MAX_BYTES && !lines.is_empty() {
                 break;
             }
 
-            lines.push((line_num, truncated));
+            lines.push((line_num, line, display));
             bytes_written += line_size;
+        }
+
+        // Handle degenerate cases before computing the last shown line number
+        if lines.is_empty() {
+            return Ok(if total_lines == 0 {
+                "(End of file - 0 lines)".to_string()
+            } else if limit == 0 {
+                "(No lines displayed: limit is 0)".to_string()
+            } else {
+                format!(
+                    "(No lines displayed: offset {} is past end of file, {} lines total)",
+                    offset, total_lines
+                )
+            });
         }
 
         // Build output with line numbers and hashes
         let mut output = lines
             .iter()
-            .map(|(line_num, content)| {
-                let hash = compute_line_hash(content);
-                format!("{:4}: {} {}", line_num, hash, content)
+            .map(|(line_num, original, display)| {
+                // Hash the full original line so hash-anchored edits work
+                // even when the displayed text is truncated
+                let hash = compute_line_hash(original);
+                format!("{:4}: {} {}", line_num, hash, display)
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -286,5 +303,59 @@ mod tests {
         // The "files" field should be present in properties
         let files_prop = &schema["properties"]["files"];
         assert_eq!(files_prop["type"].as_str().unwrap_or(""), "array");
+    }
+
+    fn spec(path: &std::path::Path, offset: Option<u32>, limit: Option<u32>) -> ReadFileSpec {
+        ReadFileSpec {
+            path: path.to_string_lossy().to_string(),
+            offset,
+            limit,
+            outline: false,
+        }
+    }
+
+    #[test]
+    fn test_read_hashes_original_line_not_truncated_display() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("long.txt");
+        let long_line = "x".repeat(MAX_LINE_LENGTH + 500);
+        fs::write(&path, format!("{}\nshort line\n", long_line)).unwrap();
+
+        let tool = ReadTool::new(Arc::new(FsOperationLog::new()));
+        let out = tool.read_file_content(&spec(&path, None, None)).unwrap();
+
+        // Hash must match the full original line, not the truncated display
+        let original_hash = compute_line_hash(&long_line);
+        let display = format!(
+            "{}{}",
+            long_line.chars().take(MAX_LINE_LENGTH).collect::<String>(),
+            MAX_LINE_SUFFIX
+        );
+        assert_ne!(original_hash, compute_line_hash(&display));
+        assert!(out.contains(&original_hash));
+        assert!(out.contains(&display));
+    }
+
+    #[test]
+    fn test_read_empty_file_and_out_of_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tool = ReadTool::new(Arc::new(FsOperationLog::new()));
+
+        let empty = dir.path().join("empty.txt");
+        fs::write(&empty, "").unwrap();
+        let out = tool.read_file_content(&spec(&empty, None, None)).unwrap();
+        assert!(out.contains("End of file - 0 lines"));
+
+        let small = dir.path().join("small.txt");
+        fs::write(&small, "a\nb\n").unwrap();
+        let out = tool
+            .read_file_content(&spec(&small, Some(100), None))
+            .unwrap();
+        assert!(out.contains("offset 100 is past end of file"));
+
+        let out = tool
+            .read_file_content(&spec(&small, None, Some(0)))
+            .unwrap();
+        assert!(out.contains("limit is 0"));
     }
 }

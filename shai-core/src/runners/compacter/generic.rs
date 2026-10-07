@@ -1,8 +1,20 @@
 use super::ansi::strip_ansi;
+use regex::Regex;
+use std::sync::OnceLock;
 
 /// Lines matching this pattern are always preserved during head/tail truncation.
-#[allow(dead_code)]
 const ERROR_PATTERN: &str = "error|Error|ERROR|failed|FAILED|panic|FATAL|Exception";
+
+/// Maximum number of error/diagnostic lines preserved from the omitted middle.
+const MAX_PRESERVED_ERROR_LINES: usize = 20;
+
+static ERROR_RE: OnceLock<Regex> = OnceLock::new();
+
+fn is_error_line(line: &str) -> bool {
+    ERROR_RE
+        .get_or_init(|| Regex::new(ERROR_PATTERN).expect("ERROR_PATTERN is a valid regex"))
+        .is_match(line)
+}
 
 /// Generic compaction applied to every tool result regardless of tool name.
 ///
@@ -95,7 +107,16 @@ fn truncate_head_tail(input: &str, max_chars: usize) -> String {
 
     let head_lines = &lines[..head_count];
     let tail_lines = &lines[lines.len() - tail_count..];
-    let omitted = lines.len() - head_count - tail_count;
+    let middle = &lines[head_count..lines.len() - tail_count];
+
+    // Preserve error/diagnostic lines from the omitted middle so the agent
+    // still sees compiler/test failures even when the bulk is truncated.
+    let preserved: Vec<&&str> = middle
+        .iter()
+        .filter(|line| is_error_line(line))
+        .take(MAX_PRESERVED_ERROR_LINES)
+        .collect();
+    let omitted = middle.len() - preserved.len();
 
     let mut result = String::with_capacity(max_chars + 64);
     for line in head_lines {
@@ -103,6 +124,16 @@ fn truncate_head_tail(input: &str, max_chars: usize) -> String {
         result.push('\n');
     }
     result.push_str(&format!("[… {} lines omitted …]\n", omitted));
+    if !preserved.is_empty() {
+        result.push_str(&format!(
+            "[{} preserved error line(s) from omitted middle:]\n",
+            preserved.len()
+        ));
+        for line in &preserved {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
     for line in tail_lines {
         result.push_str(line);
         result.push('\n');
@@ -154,5 +185,39 @@ mod tests {
     fn test_strip_ansi_applied() {
         let input = "\x1b[31mhello\x1b[0m";
         assert_eq!(compact_generic(input, 8000), "hello");
+    }
+
+    #[test]
+    fn test_truncate_preserves_error_lines_from_middle() {
+        let mut lines: Vec<String> = (0..500)
+            .map(|i| format!("info line number {}", i))
+            .collect();
+        lines.insert(
+            250,
+            "error[E0308]: mismatched types at the middle".to_string(),
+        );
+        let input = lines.join("\n");
+
+        let result = compact_generic(&input, 2000);
+        assert!(result.contains("error[E0308]: mismatched types at the middle"));
+        assert!(result.contains("lines omitted"));
+        // Non-error middle lines stay omitted
+        assert!(!result.contains("info line number 250"));
+        assert!(!result.contains("info line number 249"));
+    }
+
+    #[test]
+    fn test_truncate_caps_preserved_error_lines() {
+        let mut lines: Vec<String> = (0..600).map(|i| format!("padding line {}", i)).collect();
+        for i in 0..30 {
+            lines.insert(300 + i * 2, format!("ERROR unique diagnostic {}", i));
+        }
+        let input = lines.join("\n");
+
+        let result = compact_generic(&input, 2000);
+        assert_eq!(
+            result.matches("ERROR unique diagnostic").count(),
+            MAX_PRESERVED_ERROR_LINES
+        );
     }
 }
