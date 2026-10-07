@@ -278,7 +278,7 @@ pub fn render_system_prompt_template(template: &str) -> String {
 
     // Insert memory content if placeholder present
     if result.contains("{{MEMORY}}") {
-        let memory = crate::tools::memory::load_merged_memory();
+        let memory = crate::tools::memory::render_memory_block();
         result = result.replace("{{MEMORY}}", &memory);
     }
 

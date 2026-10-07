@@ -14,6 +14,8 @@ pub enum ToolName {
     TodoWrite,
     Write,
     Skills,
+    MemoryRemove,
+    MemoryWrite,
 }
 
 impl ToolName {
@@ -37,6 +39,8 @@ impl ToolName {
             ToolName::TodoWrite => "todo_write",
             ToolName::Write => "write",
             ToolName::Skills => "skills",
+            ToolName::MemoryRemove => "memory_remove",
+            ToolName::MemoryWrite => "memory_write",
         }
     }
 
@@ -52,6 +56,8 @@ impl ToolName {
             "todo_write" => Some(ToolName::TodoWrite),
             "write" => Some(ToolName::Write),
             "skills" => Some(ToolName::Skills),
+            "memory_remove" => Some(ToolName::MemoryRemove),
+            "memory_write" => Some(ToolName::MemoryWrite),
             _ => None,
         }
     }

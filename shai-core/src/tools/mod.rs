@@ -29,6 +29,7 @@ pub use mcp::{
     create_mcp_client, get_mcp_tools, HttpClient, McpClient, McpConfig, McpToolDescription,
     SseClient, StdioClient,
 };
+pub use memory::{MemoryRemoveTool, MemoryWriteTool};
 pub use skills::SkillTool;
 pub use todo::{
     TodoItem, TodoItemInput, TodoReadTool, TodoStatus, TodoStorage, TodoWriteParams, TodoWriteTool,
@@ -47,6 +48,8 @@ pub const TOOL_NAMES: &[&str] = &[
     "todo_read",
     "todo_write",
     "skills",
+    "memory_write",
+    "memory_remove",
 ];
 
 /// Factory function to create a built-in tool by name.
@@ -70,6 +73,8 @@ pub fn create_tool(
         "todo_read" => Some(Box::new(TodoReadTool::new(todo_storage))),
         "todo_write" => Some(Box::new(TodoWriteTool::new(todo_storage))),
         "skills" => Some(Box::new(SkillTool::new())),
+        "memory_write" => Some(Box::new(MemoryWriteTool::new())),
+        "memory_remove" => Some(Box::new(MemoryRemoveTool::new())),
         _ => None,
     }
 }
@@ -81,4 +86,39 @@ pub struct McpServerStatus {
     pub connected: bool,
     pub tool_count: usize,
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn make_tool(name: &str) -> Box<dyn AnyTool> {
+        let fs_log = Arc::new(FsOperationLog::new());
+        let todo_storage = Arc::new(TodoStorage::new());
+        create_tool(name, fs_log, todo_storage, &[])
+            .unwrap_or_else(|| panic!("create_tool returned None for '{}'", name))
+    }
+
+    #[test]
+    fn test_tool_names_are_registered() {
+        for name in ["memory_write", "memory_remove"] {
+            assert!(
+                TOOL_NAMES.contains(&name),
+                "'{}' missing from TOOL_NAMES",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_create_memory_tools() {
+        let write = make_tool("memory_write");
+        assert_eq!(write.name(), "memory_write");
+        assert_eq!(write.capabilities(), &[ToolCapability::Write]);
+
+        let remove = make_tool("memory_remove");
+        assert_eq!(remove.name(), "memory_remove");
+        assert_eq!(remove.capabilities(), &[ToolCapability::Write]);
+    }
 }

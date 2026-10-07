@@ -775,11 +775,17 @@ fn list_skills() {
     println!("Available skills:");
     for skill in &skills {
         if skill.description.is_empty() {
-            println!("  \x1b[36m\u{2022}\x1b[0m {}", skill.name);
+            println!(
+                "  \x1b[36m\u{2022}\x1b[0m {} \x1b[90m({})\x1b[0m",
+                skill.name,
+                skill.source()
+            );
         } else {
             println!(
-                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {}",
-                skill.name, skill.description
+                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {} \x1b[90m({})\x1b[0m",
+                skill.name,
+                skill.description,
+                skill.source()
             );
         }
     }

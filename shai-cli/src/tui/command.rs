@@ -390,11 +390,17 @@ impl CommandRegistry {
                     let mut msg = String::from("\x1b[1mAvailable skills:\x1b[0m\n");
                     for skill in &skills {
                         if skill.description.is_empty() {
-                            msg.push_str(&format!("  \x1b[36m\u{2022}\x1b[0m {}\n", skill.name));
+                            msg.push_str(&format!(
+                                "  \x1b[36m\u{2022}\x1b[0m {} \x1b[90m({})\x1b[0m\n",
+                                skill.name,
+                                skill.source()
+                            ));
                         } else {
                             msg.push_str(&format!(
-                                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {}\n",
-                                skill.name, skill.description
+                                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {} \x1b[90m({})\x1b[0m\n",
+                                skill.name,
+                                skill.description,
+                                skill.source()
                             ));
                         }
                     }

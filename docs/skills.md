@@ -12,14 +12,19 @@ This progressive disclosure pattern keeps the system prompt lean while making de
 
 ## Directory Structure
 
-Skills are discovered from two locations:
+Skills are discovered from three locations:
 
 | Location | Scope | Priority |
 |----------|-------|----------|
-| `.shai/skills/` | Project-local | Higher |
-| `~/.config/shai/skills/` | Global (user-wide) | Lower |
+| `.shai/skills/` | Project-local | Highest |
+| `~/.config/shai/skills/` | Global (user-wide) | Middle |
+| Built-in (embedded in the binary) | Ships with shai | Lowest |
 
-Project-local skills take precedence — if a project-local and global skill share the same name, the project-local one shadows the global.
+A skill in a higher-priority location shadows a same-named skill in a lower one. The built-in skills are compiled into every shai binary, so they work even on a fresh install with no skill directories present.
+
+To override a built-in skill (e.g. to replace the `memory` protocol with your own), create a skill with the same name in `.shai/skills/` or `~/.config/shai/skills/` — yours takes precedence and the built-in copy is ignored.
+
+`shai list skills` (and the `/skills` command in the TUI) shows where each skill comes from — `(project)`, `(global)`, or `(built-in)` — so you can see at a glance which skills are overriding others.
 
 ## Creating a Skill
 
@@ -82,25 +87,27 @@ The model will load the `code-review` skill if it's available and relevant.
 
 ## Bundled Skills
 
-The following skills ship with shai:
+Only generic, project-agnostic skills are embedded in the shai binary:
 
-### code-review
-Review uncommitted or branch-diff changes for bugs, security issues, style violations, and potential improvements.
+### memory
+Save, organize, and curate persistent memories across sessions. Defines the protocol for the `MEMORY.md` index and per-topic detail files that `memory_write`/`memory_remove` manage.
 
-### git-workflow
-Manage git branches, commits, rebases, and pull requests following project conventions.
+## Sample Skills
 
-### testing
-Write and run tests, ensure adequate test coverage, and fix failing tests.
+Shai/Rust-specific sample skills live in `shai-core/examples/skills/` in the repository. They are **not** bundled — copy any of them into `.shai/skills/` or `~/.config/shai/skills/` to use them:
 
-### debugging
-Systematically diagnose and fix bugs using logs, stack traces, and targeted experiments.
+- **code-review** — Review uncommitted or branch-diff changes for bugs, security issues, style violations, and potential improvements.
+- **git-workflow** — Manage git branches, commits, rebases, and pull requests following project conventions.
+- **testing** — Write and run tests, ensure adequate test coverage, and fix failing tests.
+- **debugging** — Systematically diagnose and fix bugs using logs, stack traces, and targeted experiments.
+- **release** — Prepare and publish a new release of the SHAI project, including version bumps and tagging.
+- **refactoring** — Restructure existing code to improve readability, maintainability, and performance without changing behavior.
+- **repo-analysis** — Analyze repository structure and produce an overview.
+- **rust-lint** — Run and fix Rust linting (clippy/fmt) issues.
 
-### release
-Prepare and publish a new release of the SHAI project, including version bumps and tagging.
-
-### refactoring
-Restructure existing code to improve readability, maintainability, and performance without changing behavior.
+```bash
+cp -r shai-core/examples/skills/code-review ~/.config/shai/skills/
+```
 
 ## Skills vs MCP vs AGENTS.md
 

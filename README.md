@@ -154,7 +154,7 @@ Skills are composable, on-demand procedural instructions that extend shai's capa
     └── SKILL.md
 ```
 
-See [Skills documentation](./docs/skills.md) for details.
+They are discovered from `.shai/skills/` (project), `~/.config/shai/skills/` (global), and built-ins embedded in the binary (e.g. `memory`, the persistent-memory protocol). A same-named skill in a higher tier shadows the lower one, so you can override built-ins with your own version. See [Skills documentation](./docs/skills.md) for details.
 
 ### TUI Slash Commands
 

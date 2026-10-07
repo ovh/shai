@@ -1,3 +1,4 @@
+pub mod builtin;
 pub mod discovery;
 pub mod skill_tool;
 
