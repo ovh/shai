@@ -26,6 +26,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 paste = "1.0"
+mockito = "1.4"
 
 [lints.rust]
 dead_code = "allow"

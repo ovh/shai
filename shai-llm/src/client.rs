@@ -268,12 +268,76 @@ impl LlmClient {
     const DEFAULT_MAX_RETRIES: usize = 3;
     /// Base delay in milliseconds for exponential backoff.
     const RETRY_BASE_DELAY_MS: u64 = 1000;
+    /// Cap for a server-announced `Retry-After` delay (5 minutes).
+    const MAX_RETRY_AFTER_MS: u64 = 300_000;
 
     /// Returns true if the error is likely transient and worth retrying.
-    /// Since all LLM errors are potentially transient (server overload, network
-    /// issues, malformed responses), we retry on any error.
-    fn is_retryable_error(_error: &LlmError) -> bool {
-        true
+    ///
+    /// Client errors that won't fix themselves by retrying (bad request,
+    /// authentication, permission, not found) are not retried. Everything else
+    /// (rate limits, server errors, network issues) is.
+    fn is_retryable_error(error: &LlmError) -> bool {
+        use openai_dive::v1::error::APIError;
+
+        // 429/503/529 are transient by nature
+        if error
+            .downcast_ref::<crate::error::RateLimitedError>()
+            .is_some()
+        {
+            return true;
+        }
+
+        if let Some(chat_error) = error.downcast_ref::<crate::chat::ChatError>() {
+            match chat_error {
+                crate::chat::ChatError::RateLimited(_) => return true,
+                crate::chat::ChatError::Api(api_error) => {
+                    return Self::is_retryable_api_error(api_error)
+                }
+            }
+        }
+
+        match error.downcast_ref::<APIError>() {
+            Some(api_error) => Self::is_retryable_api_error(api_error),
+            // Network errors, unexpected failures, etc: retry
+            None => true,
+        }
+    }
+
+    fn is_retryable_api_error(error: &openai_dive::v1::error::APIError) -> bool {
+        use openai_dive::v1::error::APIError;
+        match error {
+            APIError::InvalidRequestError(_)
+            | APIError::AuthenticationError(_)
+            | APIError::PermissionError(_)
+            | APIError::NotFoundError(_) => false,
+            APIError::UnknownError(status, _) => !matches!(status, 400 | 401 | 403 | 404),
+            _ => true,
+        }
+    }
+
+    /// Extract a `Retry-After` delay announced by the server, if any.
+    fn retry_after_from_error(error: &LlmError) -> Option<std::time::Duration> {
+        if let Some(rate_limited) = error.downcast_ref::<crate::error::RateLimitedError>() {
+            return rate_limited.retry_after;
+        }
+        if let Some(chat_error) = error.downcast_ref::<crate::chat::ChatError>() {
+            return chat_error.retry_after();
+        }
+        None
+    }
+
+    /// Compute the delay before the next retry attempt.
+    ///
+    /// Honors the server-announced `Retry-After` delay (capped at
+    /// [`MAX_RETRY_AFTER_MS`]) when present, otherwise falls back to
+    /// exponential backoff.
+    fn retry_delay_ms(error: &LlmError, attempt: usize) -> u64 {
+        if let Some(retry_after) = Self::retry_after_from_error(error) {
+            return retry_after
+                .as_millis()
+                .min(Self::MAX_RETRY_AFTER_MS as u128) as u64;
+        }
+        Self::RETRY_BASE_DELAY_MS * (1 << attempt)
     }
 
     pub async fn chat(
@@ -292,7 +356,7 @@ impl LlmClient {
                     crate::logging::log_llm_error(&request, &error, self.provider_name());
 
                     if attempt < max_retries && Self::is_retryable_error(&error) {
-                        let delay_ms = Self::RETRY_BASE_DELAY_MS * (1 << attempt);
+                        let delay_ms = Self::retry_delay_ms(&error, attempt);
                         warn!(
                             target: "shai_llm::client",
                             "LLM request failed (attempt {}/{}), retrying in {}ms: {}",
@@ -328,7 +392,7 @@ impl LlmClient {
                 Ok(stream) => return Ok(stream),
                 Err(error) => {
                     if attempt < max_retries && Self::is_retryable_error(&error) {
-                        let delay_ms = Self::RETRY_BASE_DELAY_MS * (1 << attempt);
+                        let delay_ms = Self::retry_delay_ms(&error, attempt);
                         warn!(
                             target: "shai_llm::client",
                             "LLM stream request failed (attempt {}/{}), retrying in {}ms: {}",
@@ -627,5 +691,124 @@ mod openai_dive_compat {
         };
         assert_eq!(reasoning_content.as_deref(), Some("pondering"));
         assert!(matches!(content, Some(ChatMessageContent::Text(t)) if t == "final"));
+    }
+}
+
+#[cfg(test)]
+mod retry_logic {
+    use super::LlmClient;
+    use crate::chat::ChatError;
+    use crate::error::RateLimitedError;
+    use crate::provider::LlmError;
+    use openai_dive::v1::error::APIError;
+    use std::time::Duration;
+
+    fn boxed<E: std::error::Error + Send + Sync + 'static>(e: E) -> LlmError {
+        Box::new(e)
+    }
+
+    #[test]
+    fn retry_delay_honors_retry_after() {
+        let err = boxed(RateLimitedError::new(
+            429,
+            Some(Duration::from_secs(7)),
+            "slow down".into(),
+        ));
+        assert_eq!(LlmClient::retry_delay_ms(&err, 0), 7_000);
+        // Retry-After wins over the exponential backoff for any attempt
+        assert_eq!(LlmClient::retry_delay_ms(&err, 3), 7_000);
+    }
+
+    #[test]
+    fn retry_delay_caps_large_retry_after() {
+        let err = boxed(RateLimitedError::new(
+            429,
+            Some(Duration::from_secs(3600)),
+            "slow down".into(),
+        ));
+        assert_eq!(
+            LlmClient::retry_delay_ms(&err, 0),
+            LlmClient::MAX_RETRY_AFTER_MS
+        );
+    }
+
+    #[test]
+    fn retry_delay_falls_back_to_exponential_backoff() {
+        let err = boxed(APIError::ServerError("boom".into()));
+        assert_eq!(LlmClient::retry_delay_ms(&err, 0), 1_000);
+        assert_eq!(LlmClient::retry_delay_ms(&err, 1), 2_000);
+        assert_eq!(LlmClient::retry_delay_ms(&err, 2), 4_000);
+    }
+
+    #[test]
+    fn retry_after_from_error_reads_both_wrappers() {
+        let direct = boxed(RateLimitedError::new(
+            503,
+            Some(Duration::from_secs(3)),
+            "unavailable".into(),
+        ));
+        assert_eq!(
+            LlmClient::retry_after_from_error(&direct),
+            Some(Duration::from_secs(3))
+        );
+
+        let wrapped = boxed(ChatError::RateLimited(RateLimitedError::new(
+            429,
+            Some(Duration::from_secs(5)),
+            "limited".into(),
+        )));
+        assert_eq!(
+            LlmClient::retry_after_from_error(&wrapped),
+            Some(Duration::from_secs(5))
+        );
+
+        let none = boxed(APIError::RateLimitError("no header".into()));
+        assert_eq!(LlmClient::retry_after_from_error(&none), None);
+    }
+
+    #[test]
+    fn client_errors_are_not_retried() {
+        for err in [
+            boxed(APIError::InvalidRequestError("bad".into())),
+            boxed(APIError::AuthenticationError("auth".into())),
+            boxed(APIError::PermissionError("denied".into())),
+            boxed(APIError::NotFoundError("missing".into())),
+            boxed(APIError::UnknownError(404, "missing".into())),
+        ] {
+            assert!(
+                !LlmClient::is_retryable_error(&err),
+                "{:?} should not be retryable",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn transient_errors_are_retried() {
+        for err in [
+            boxed(APIError::RateLimitError("limit".into())),
+            boxed(APIError::ServerError("boom".into())),
+            boxed(APIError::UnknownError(500, "boom".into())),
+            boxed(RateLimitedError::new(429, None, "limit".into())),
+            boxed(ChatError::RateLimited(RateLimitedError::new(
+                503,
+                None,
+                "unavailable".into(),
+            ))),
+        ] {
+            assert!(
+                LlmClient::is_retryable_error(&err),
+                "{:?} should be retryable",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn chat_error_api_variant_delegates_to_api_rules() {
+        let auth = boxed(ChatError::Api(APIError::AuthenticationError("auth".into())));
+        assert!(!LlmClient::is_retryable_error(&auth));
+        let server = boxed(ChatError::Api(APIError::ServerError("boom".into())));
+        assert!(LlmClient::is_retryable_error(&server));
     }
 }
