@@ -88,6 +88,28 @@ pub struct SessionPersist;
 
 type PersistError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Maximum length of a session id
+const MAX_SESSION_ID_LEN: usize = 128;
+
+/// Validate a session id before it is used in a filesystem path.
+///
+/// Session ids come from user-controlled inputs (HTTP path segments, CLI
+/// arguments). Restricting them to `[A-Za-z0-9_-]` makes path traversal
+/// structurally impossible. Generated ids (UUIDs, `resp_<uuid>`) comply.
+fn validate_session_id(session_id: &str) -> Result<(), PersistError> {
+    let valid = !session_id.is_empty()
+        && session_id.len() <= MAX_SESSION_ID_LEN
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        // Generic message: do not echo the (potentially hostile) input back
+        Err(io::Error::new(ErrorKind::InvalidInput, "invalid session id").into())
+    }
+}
+
 impl SessionPersist {
     /// Check if session persistence is enabled via environment variable
     pub fn is_enabled() -> bool {
@@ -103,9 +125,22 @@ impl SessionPersist {
             .unwrap_or_else(|_| PathBuf::from(".shai/sessions"))
     }
 
-    /// Get the file path for a specific session
-    fn session_file_path(session_id: &str) -> PathBuf {
-        Self::folder().join(format!("{}.json", session_id))
+    /// Get the file path for a specific session, after validating the id.
+    ///
+    /// Defense in depth: beyond the charset validation, the joined path is
+    /// checked to remain inside the session folder.
+    fn session_file_path(session_id: &str) -> Result<PathBuf, PersistError> {
+        validate_session_id(session_id)?;
+        let folder = Self::folder();
+        let path = folder.join(format!("{}.json", session_id));
+        if !path.starts_with(&folder) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "session id escapes session folder",
+            )
+            .into());
+        }
+        Ok(path)
     }
 
     /// Save a session to disk (atomic write using temp file)
@@ -114,9 +149,12 @@ impl SessionPersist {
             return Ok(());
         }
 
+        // Validate up-front so hostile ids never reach the filesystem,
+        // including the empty-trace deletion branch below
+        let file_path = Self::session_file_path(session_id)?;
+
         // Don't keep empty trace files around — delete if one already exists
         if trace.is_empty() {
-            let file_path = Self::session_file_path(session_id);
             if file_path.exists() {
                 let _ = fs::remove_file(&file_path);
             }
@@ -130,8 +168,6 @@ impl SessionPersist {
             error!("Failed to create session directory: {}", e);
             return Err(e.into());
         }
-
-        let file_path = Self::session_file_path(session_id);
 
         // Load existing data to preserve created_at and name, or create new
         let (created_at, updated_at, name) = if file_path.exists() {
@@ -177,7 +213,7 @@ impl SessionPersist {
             return Err(io::Error::other("Session persistence is not enabled").into());
         }
 
-        let file_path = Self::session_file_path(session_id);
+        let file_path = Self::session_file_path(session_id)?;
 
         // If file doesn't exist, return error
         if !file_path.exists() {
@@ -203,7 +239,10 @@ impl SessionPersist {
             return;
         }
 
-        let file_path = Self::session_file_path(session_id);
+        let Ok(file_path) = Self::session_file_path(session_id) else {
+            debug!("Refusing to delete session with invalid id");
+            return;
+        };
 
         if file_path.exists() {
             match fs::remove_file(&file_path) {
@@ -251,5 +290,86 @@ impl SessionPersist {
         // Sort by updated_at descending (most recent first)
         sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(sessions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_session_id_accepts_generated_formats() {
+        assert!(validate_session_id(&Uuid::new_v4().to_string()).is_ok());
+        assert!(validate_session_id(&format!("resp_{}", Uuid::new_v4())).is_ok());
+        assert!(validate_session_id("abc-DEF_123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_session_id_rejects_hostile_ids() {
+        let too_long = "x".repeat(MAX_SESSION_ID_LEN + 1);
+        for id in [
+            "../evil",
+            "..",
+            ".",
+            "",
+            "a/b",
+            "a\\b",
+            "foo.bar",
+            "foo:bar",
+            "id with space",
+            &too_long,
+        ] {
+            assert!(validate_session_id(id).is_err(), "should reject {:?}", id);
+        }
+    }
+
+    // Single test touches SHAI_SESSION_PERSIST_FOLDER to avoid env-var races
+    // between parallel tests.
+    #[test]
+    fn test_session_persist_roundtrip_and_traversal() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let prev_folder = std::env::var("SHAI_SESSION_PERSIST_FOLDER").ok();
+        let prev_enable = std::env::var("SHAI_SESSION_PERSIST_ENABLE").ok();
+        std::env::set_var("SHAI_SESSION_PERSIST_FOLDER", temp.path());
+        std::env::set_var("SHAI_SESSION_PERSIST_ENABLE", "true");
+
+        let id = Uuid::new_v4().to_string();
+        let trace = vec![ChatMessage::User {
+            content: openai_dive::v1::resources::chat::ChatMessageContent::Text(
+                "hello".to_string(),
+            ),
+            name: None,
+        }];
+
+        // save -> load roundtrip
+        SessionPersist::save_session(&id, trace.clone()).unwrap();
+        let loaded = SessionPersist::load_session(&id).unwrap();
+        assert_eq!(loaded.session_id, id);
+        assert_eq!(loaded.trace.len(), 1);
+
+        // delete removes the session
+        SessionPersist::delete_session(&id);
+        assert!(SessionPersist::load_session(&id).is_err());
+
+        // traversal attempts are rejected and never touch the filesystem
+        let outside = temp.path().parent().unwrap().join("evil.json");
+        assert!(SessionPersist::save_session("../evil", trace.clone()).is_err());
+        assert!(!outside.exists());
+        assert!(!temp.path().join("evil.json").exists());
+        assert!(SessionPersist::load_session("../../etc/passwd").is_err());
+        SessionPersist::delete_session("../evil"); // no-op, must not panic
+
+        // empty-trace save with a hostile id must not delete anything either
+        assert!(SessionPersist::save_session("../evil", Vec::new()).is_err());
+
+        // Cleanup
+        match prev_folder {
+            Some(v) => std::env::set_var("SHAI_SESSION_PERSIST_FOLDER", v),
+            None => std::env::remove_var("SHAI_SESSION_PERSIST_FOLDER"),
+        }
+        match prev_enable {
+            Some(v) => std::env::set_var("SHAI_SESSION_PERSIST_ENABLE", v),
+            None => std::env::remove_var("SHAI_SESSION_PERSIST_ENABLE"),
+        }
     }
 }
