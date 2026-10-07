@@ -12,9 +12,10 @@ pub struct RenderManager {
 
 impl RenderManager {
     pub fn new() -> Self {
+        let skin = shai_core::config::tui::TuiConfig::load().markdown_skin();
         Self {
             history: ConversationHistory::new(),
-            formatter: PrettyFormatter::new(),
+            formatter: PrettyFormatter::with_theme(skin),
         }
     }
 
@@ -35,14 +36,19 @@ impl RenderManager {
 #[async_trait::async_trait]
 impl AgentHandler for RenderManager {
     async fn handle_event(&mut self, event: &AgentEvent) {
+        let stick = self.history.at_bottom();
         if let Some(formatted) = self.formatter.format_event(event) {
             self.history.add_text(&formatted);
-            self.history.scroll_to_bottom();
+            if stick {
+                self.history.scroll_to_bottom();
+            }
         }
         if let AgentEvent::Error { error } = event {
             let error_msg = format!("\x1b[31m\u{2718} Error: {}\x1b[0m", error);
             self.history.add_text(&error_msg);
-            self.history.scroll_to_bottom();
+            if stick {
+                self.history.scroll_to_bottom();
+            }
         }
     }
 }
@@ -70,5 +76,35 @@ mod tests {
         };
         renderer.handle_event(&event).await;
         assert!(renderer.history().at_bottom());
+    }
+
+    #[tokio::test]
+    async fn test_sticky_scroll_follows_when_at_bottom() {
+        let mut renderer = RenderManager::new();
+        renderer.history_mut().add_text(&"line\n".repeat(50));
+        assert!(renderer.history().at_bottom());
+
+        let event = AgentEvent::Completed {
+            success: true,
+            message: "done".to_string(),
+        };
+        renderer.handle_event(&event).await;
+        assert!(renderer.history().at_bottom());
+    }
+
+    #[tokio::test]
+    async fn test_sticky_scroll_preserved_when_scrolled_up() {
+        let mut renderer = RenderManager::new();
+        renderer.history_mut().add_text(&"line\n".repeat(50));
+        renderer.history_mut().scroll_up(10);
+        let offset = renderer.history().scroll_offset();
+        assert!(offset > 0);
+
+        let event = AgentEvent::Completed {
+            success: true,
+            message: "done".to_string(),
+        };
+        renderer.handle_event(&event).await;
+        assert_eq!(renderer.history().scroll_offset(), offset);
     }
 }

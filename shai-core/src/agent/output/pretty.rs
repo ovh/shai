@@ -1,10 +1,17 @@
 use crate::agent::{AgentError, AgentEvent};
+use crate::config::tui::ThemePreference;
 use crate::tools::highlight::highlight_content;
 use crate::tools::{ToolCall, ToolResult};
 use chrono::Utc;
 use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
 use termimad::crossterm::style::Color;
 use termimad::{rgb, MadSkin};
+
+/// Braille spinner frames, cycled at ~100ms per frame
+pub const SPINNER_FRAMES: [&str; 10] = [
+    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2825}", "\u{280F}",
+];
 
 /// Pretty formatter that formats agent events into strings for display
 pub struct PrettyFormatter {
@@ -13,13 +20,30 @@ pub struct PrettyFormatter {
 }
 
 impl PrettyFormatter {
+    /// Default formatter: dark markdown skin.
     pub fn new() -> Self {
-        Self::with_max_preview_lines(50)
+        Self::with_theme_and_preview_lines(ThemePreference::default(), 50)
+    }
+
+    /// Formatter honoring the configured markdown skin (defaults to dark).
+    pub fn with_theme(theme: ThemePreference) -> Self {
+        Self::with_theme_and_preview_lines(theme, 50)
     }
 
     pub fn with_max_preview_lines(max_preview_lines: usize) -> Self {
-        let mut skin = MadSkin::default_dark();
-        skin.code_block.set_fgbg(Color::DarkGrey, Color::Reset);
+        Self::with_theme_and_preview_lines(ThemePreference::default(), max_preview_lines)
+    }
+
+    fn with_theme_and_preview_lines(theme: ThemePreference, max_preview_lines: usize) -> Self {
+        let skin = match theme {
+            ThemePreference::Light => MadSkin::default_light(),
+            // Markdown rendering defaults to dark; light is opt-in only
+            ThemePreference::Dark => {
+                let mut skin = MadSkin::default_dark();
+                skin.code_block.set_fgbg(Color::DarkGrey, Color::Reset);
+                skin
+            }
+        };
         Self {
             skin,
             max_preview_lines,
@@ -205,11 +229,8 @@ impl PrettyFormatter {
         let context = Self::extract_primary_param(&call.parameters, &call.tool_name);
 
         let mut output = String::new();
-        let bullet = if (Utc::now().timestamp_millis() / 500) % 2 == 0 {
-            "→"
-        } else {
-            "➔"
-        };
+        let frame = (Utc::now().timestamp_millis() / 100) as usize % SPINNER_FRAMES.len();
+        let bullet = SPINNER_FRAMES[frame];
         if let Some((_, ctx)) = context {
             output.push_str(&format!(
                 "\x1b[36m{}\x1b[0m \x1b[1m{}\x1b[0m {}",
@@ -522,5 +543,50 @@ impl PrettyFormatter {
 impl Default for PrettyFormatter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ToolCall;
+
+    fn bash_call() -> ToolCall {
+        ToolCall {
+            tool_call_id: "t1".to_string(),
+            tool_name: "bash".to_string(),
+            parameters: serde_json::json!({"command": "sleep 5"}),
+        }
+    }
+
+    #[test]
+    fn test_spinner_frames_len() {
+        assert_eq!(SPINNER_FRAMES.len(), 10);
+    }
+
+    #[test]
+    fn test_with_theme_constructs() {
+        let _dark = PrettyFormatter::with_theme(ThemePreference::Dark);
+        let _light = PrettyFormatter::with_theme(ThemePreference::Light);
+        let _default = PrettyFormatter::new();
+    }
+
+    #[test]
+    fn test_format_tool_running_uses_spinner_frame() {
+        let formatter = PrettyFormatter::new();
+        let out = formatter.format_tool_running(&bash_call());
+        assert!(
+            SPINNER_FRAMES.iter().any(|f| out.contains(f)),
+            "running tool output should contain a spinner frame: {}",
+            out
+        );
+        assert!(out.contains("Bash"));
+    }
+
+    #[test]
+    fn test_format_tool_running_shows_context() {
+        let formatter = PrettyFormatter::new();
+        let out = formatter.format_tool_running(&bash_call());
+        assert!(out.contains("sleep 5"));
     }
 }

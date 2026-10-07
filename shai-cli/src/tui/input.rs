@@ -190,10 +190,7 @@ impl InputArea<'_> {
         if let Some(ref msg) = self.status_message {
             format!(" {}", msg)
         } else if let Some(animation_start) = self.animation_start {
-            let spinner_chars = [
-                "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
-                "\u{2827}", "\u{2825}", "\u{280F}",
-            ];
+            let spinner_chars = shai_core::agent::output::pretty::SPINNER_FRAMES;
             let elapsed = animation_start.elapsed().as_millis();
             let index = (elapsed / 100) % spinner_chars.len() as u128;
             format!(
@@ -561,7 +558,10 @@ impl InputArea<'_> {
 
         let [pad, prompt] =
             Layout::horizontal([Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
-        f.render_widget(">".to_string(), pad);
+        f.render_widget(
+            Span::styled(">", Style::default().fg(self.palette.input_text)),
+            pad,
+        );
 
         // Set placeholder and block
         self.input.set_placeholder_text(&self.placeholder);
@@ -610,7 +610,7 @@ impl InputArea<'_> {
 
         // help
         if let Some(help) = &self.help {
-            help.draw(f, help_area);
+            help.draw(f, help_area, &self.palette);
         }
     }
 }

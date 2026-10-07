@@ -199,7 +199,9 @@ impl FileSuggestion {
                         .fg(palette.suggestion_selected_fg)
                         .bg(palette.suggestion_selected_bg)
                 } else {
-                    Style::default().fg(palette.suggestion_normal)
+                    Style::default()
+                        .fg(palette.suggestion_normal)
+                        .bg(palette.background)
                 };
                 ListItem::new(path.as_str()).style(style)
             })
@@ -216,6 +218,7 @@ impl FileSuggestion {
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
                 .border_style(Style::default().fg(palette.border))
+                .bg(palette.background)
                 .title(title),
         );
 
@@ -332,7 +335,9 @@ impl CommandSuggestion {
                         .fg(palette.suggestion_selected_fg)
                         .bg(palette.suggestion_selected_bg)
                 } else {
-                    Style::default().fg(palette.suggestion_normal)
+                    Style::default()
+                        .fg(palette.suggestion_normal)
+                        .bg(palette.background)
                 };
                 ListItem::new(cmd.as_str()).style(style)
             })

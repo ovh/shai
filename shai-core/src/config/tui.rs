@@ -229,22 +229,34 @@ impl Default for ShortcutsConfig {
     }
 }
 
+/// Theme selection for TUI and markdown rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    #[default]
+    Dark,
+    Light,
+}
+
 /// Top-level TUI configuration loaded from `tui.config.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TuiConfig {
     #[serde(default)]
     pub shortcuts: ShortcutsConfig,
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            shortcuts: ShortcutsConfig::default(),
-        }
-    }
+    /// Initial TUI theme (toggled at runtime with `/theme`)
+    #[serde(default)]
+    pub theme: ThemePreference,
+    /// Markdown rendering skin for agent responses. When omitted it follows `theme`.
+    #[serde(default)]
+    pub markdown_skin: Option<ThemePreference>,
 }
 
 impl TuiConfig {
+    /// Markdown skin, falling back to the TUI theme when not set explicitly.
+    pub fn markdown_skin(&self) -> ThemePreference {
+        self.markdown_skin.unwrap_or(self.theme)
+    }
+
     pub fn config_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let config_dir = std::env::var("XDG_CONFIG_HOME")
             .map(std::path::PathBuf::from)
@@ -278,8 +290,17 @@ impl TuiConfig {
         serde_json::from_reader(stripped).unwrap_or_default()
     }
 
-    /// Build config from `SHAI_KEY_*` environment variables, falling back to defaults.
+    /// Build config from `SHAI_KEY_*` / `SHAI_TUI_THEME` environment variables,
+    /// falling back to defaults. Only used when `tui.config.json` does not exist.
     fn from_env_or_default() -> Self {
+        let theme = match std::env::var("SHAI_TUI_THEME") {
+            Ok(val) => match val.to_lowercase().as_str() {
+                "light" => ThemePreference::Light,
+                "dark" => ThemePreference::Dark,
+                _ => ThemePreference::default(),
+            },
+            Err(_) => ThemePreference::default(),
+        };
         let mut shortcuts = ShortcutsConfig::default();
         if let Ok(val) = std::env::var("SHAI_KEY_TOGGLE_THEME") {
             if let Ok(kb) = parse_binding(&val) {
@@ -306,7 +327,11 @@ impl TuiConfig {
                 shortcuts.paste = kb;
             }
         }
-        Self { shortcuts }
+        Self {
+            shortcuts,
+            theme,
+            markdown_skin: None,
+        }
     }
 }
 
@@ -425,5 +450,46 @@ mod tests {
             config.shortcuts.cycle_agent_mode,
             parsed.shortcuts.cycle_agent_mode
         );
+        assert_eq!(config.theme, parsed.theme);
+        assert_eq!(config.markdown_skin, parsed.markdown_skin);
+    }
+
+    #[test]
+    fn test_theme_defaults_to_dark() {
+        let config = TuiConfig::default();
+        assert_eq!(config.theme, ThemePreference::Dark);
+        assert_eq!(config.markdown_skin, None);
+        assert_eq!(config.markdown_skin(), ThemePreference::Dark);
+    }
+
+    #[test]
+    fn test_theme_fields_parse_from_json() {
+        let parsed: TuiConfig =
+            serde_json::from_str(r#"{ "theme": "light", "markdown_skin": "light" }"#).unwrap();
+        assert_eq!(parsed.theme, ThemePreference::Light);
+        assert_eq!(parsed.markdown_skin, Some(ThemePreference::Light));
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Light);
+
+        let parsed: TuiConfig = serde_json::from_str(r#"{ "theme": "dark" }"#).unwrap();
+        assert_eq!(parsed.theme, ThemePreference::Dark);
+        assert_eq!(parsed.markdown_skin, None);
+    }
+
+    #[test]
+    fn test_markdown_skin_follows_theme_when_unset() {
+        let parsed: TuiConfig = serde_json::from_str(r#"{ "theme": "light" }"#).unwrap();
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Light);
+
+        let parsed: TuiConfig =
+            serde_json::from_str(r#"{ "theme": "light", "markdown_skin": "dark" }"#).unwrap();
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Dark);
+    }
+
+    #[test]
+    fn test_theme_fields_omitted_fall_back_to_default() {
+        let parsed: TuiConfig = serde_json::from_str(r#"{ "shortcuts": {} }"#).unwrap();
+        assert_eq!(parsed.theme, ThemePreference::Dark);
+        assert_eq!(parsed.markdown_skin, None);
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Dark);
     }
 }

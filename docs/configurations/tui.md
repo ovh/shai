@@ -33,7 +33,12 @@ If the file does not exist, default values are used.
     "session_picker": "ctrl+o",
     "prompt_picker": "ctrl+p",
     "cycle_agent_mode": "shift+tab"
-  }
+  },
+  // Initial TUI theme: "dark" (default) or "light". Toggle at runtime with /theme
+  "theme": "dark",
+  // Optional: markdown rendering skin for agent responses ("dark" or "light").
+  // When omitted it follows "theme"
+  "markdown_skin": null
 }
 ```
 
@@ -110,13 +115,14 @@ Previous versions of Shai supported `SHAI_KEY_*` environment variables for short
 
 To migrate, create a `tui.config.json` file with your custom bindings.
 
-| Env var | Shortcut |
+| Env var | Config equivalent |
 |---------|----------|
-| `SHAI_KEY_TOGGLE_THEME` | `toggle_theme` |
-| `SHAI_KEY_EXIT` | `exit` |
-| `SHAI_KEY_CANCEL_TASK` | `cancel_task` |
-| `SHAI_KEY_CLEAR_INPUT` | `clear_input` |
-| `SHAI_KEY_PASTE` | `paste` |
+| `SHAI_KEY_TOGGLE_THEME` | `shortcuts.toggle_theme` |
+| `SHAI_KEY_EXIT` | `shortcuts.exit` |
+| `SHAI_KEY_CANCEL_TASK` | `shortcuts.cancel_task` |
+| `SHAI_KEY_CLEAR_INPUT` | `shortcuts.clear_input` |
+| `SHAI_KEY_PASTE` | `shortcuts.paste` |
+| `SHAI_TUI_THEME` | `theme` |
 
 ### From older versions
 

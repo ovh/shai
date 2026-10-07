@@ -44,29 +44,30 @@ pub struct ThemePalette {
     pub diff_added: Color,
     #[allow(dead_code)] // TODO: reserved for future diff rendering
     pub diff_removed: Color,
+    /// Status bar chip: provider
+    pub chip_primary_fg: Color,
+    pub chip_primary_bg: Color,
+    /// Status bar chips: model, git branch, tokens
+    pub chip_secondary_fg: Color,
+    pub chip_secondary_bg: Color,
+    /// Status bar chip: agent mode
+    pub chip_accent_fg: Color,
+    pub chip_accent_bg: Color,
+    /// Status bar chips: location, tool-call method, notifications
+    pub chip_warn_fg: Color,
+    pub chip_warn_bg: Color,
 }
 
 impl Theme {
-    /// Detect theme from environment variables and terminal capabilities
-    /// Checks SHAI_TUI_THEME first, then COLORFGS/NO_COLOR, defaults to Dark
-    pub fn from_env() -> Self {
-        // Explicit override takes priority
-        if let Ok(theme) = std::env::var("SHAI_TUI_THEME") {
-            match theme.to_lowercase().as_str() {
-                "light" => return Theme::Light,
-                "dark" => return Theme::Dark,
-                _ => {}
-            }
+    /// Load the initial theme from `tui.config.json` (`theme` field).
+    /// The `SHAI_TUI_THEME` env var is only honored when no config file exists
+    /// (see `TuiConfig::load`), defaults to Dark.
+    pub fn from_config() -> Self {
+        use shai_core::config::tui::ThemePreference;
+        match shai_core::config::tui::TuiConfig::load().theme {
+            ThemePreference::Dark => Theme::Dark,
+            ThemePreference::Light => Theme::Light,
         }
-
-        // Respect NO_COLOR convention (https://no-color.org/)
-        if std::env::var("NO_COLOR").is_ok() {
-            // NO_COLOR doesn't necessarily mean light theme, but we can't detect
-            // terminal background reliably, so fall through to default
-        }
-
-        // Default to Dark theme
-        Theme::Dark
     }
 
     pub fn toggle(&mut self) {
@@ -90,9 +91,18 @@ impl Theme {
                 cursor_fg: Color::White,
                 cursor_bg: Color::White,
                 error: Color::Rgb(255, 100, 100),
+                // Opaque so text contrast holds regardless of the terminal's own background
                 background: Color::Black,
                 diff_added: Color::Rgb(100, 255, 100),
                 diff_removed: Color::Rgb(255, 100, 100),
+                chip_primary_fg: Color::Black,
+                chip_primary_bg: Color::Cyan,
+                chip_secondary_fg: Color::White,
+                chip_secondary_bg: Color::DarkGray,
+                chip_accent_fg: Color::Black,
+                chip_accent_bg: Color::Green,
+                chip_warn_fg: Color::Black,
+                chip_warn_bg: Color::Yellow,
             },
             Theme::Light => ThemePalette {
                 input_text: Color::Black,
@@ -109,6 +119,14 @@ impl Theme {
                 background: Color::White,
                 diff_added: Color::Rgb(0, 150, 0),
                 diff_removed: Color::Rgb(200, 0, 0),
+                chip_primary_fg: Color::Black,
+                chip_primary_bg: Color::Rgb(150, 220, 220),
+                chip_secondary_fg: Color::Black,
+                chip_secondary_bg: Color::Rgb(210, 210, 210),
+                chip_accent_fg: Color::Black,
+                chip_accent_bg: Color::Rgb(150, 220, 150),
+                chip_warn_fg: Color::Black,
+                chip_warn_bg: Color::Rgb(255, 220, 100),
             },
         }
     }
@@ -165,11 +183,58 @@ pub fn apply_gradient(text: &str, from_color: (u8, u8, u8), to_color: (u8, u8, u
     result
 }
 
-pub fn logo() -> String {
-    shai_logo().replace("\n", "\r\n")
-}
-
 pub fn logo_cyan() -> String {
     let logo = shai_logo().replace("\n", "\r\n");
     apply_gradient(&logo, (255, 0, 255), (0, 255, 255))
+}
+/// Welcome block rendered inside the TUI at startup: logo + usage hints.
+pub fn welcome_text() -> String {
+    let logo = apply_gradient(shai_logo().trim_start(), SHAI_YELLOW, SHAI_YELLOW);
+    // Explicit neutral grey: stays readable on both dark and light backgrounds
+    let hints =
+        "\x1b[38;5;244m? help \u{00B7} / commands \u{00B7} esc cancel \u{00B7} ctrl+c quit\x1b[0m";
+    format!("{}\n\n{}", logo.trim_end(), hints)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Strip ANSI escape sequences so per-char gradient codes don't hide content
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' && matches!(chars.peek(), Some('[')) {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_welcome_text_contains_version_and_hints() {
+        let text = strip_ansi(&welcome_text());
+        assert!(text.contains(env!("CARGO_PKG_VERSION")));
+        assert!(text.contains("? help"));
+        assert!(text.contains("/ commands"));
+    }
+
+    #[test]
+    fn test_both_palettes_define_chip_colors() {
+        for theme in [Theme::Dark, Theme::Light] {
+            let palette = theme.palette();
+            assert_ne!(palette.chip_primary_fg, palette.chip_primary_bg);
+            assert_ne!(palette.chip_secondary_fg, palette.chip_secondary_bg);
+            assert_ne!(palette.chip_accent_fg, palette.chip_accent_bg);
+            assert_ne!(palette.chip_warn_fg, palette.chip_warn_bg);
+        }
+    }
 }

@@ -1,4 +1,6 @@
 #![allow(clippy::module_inception)]
+// async_trait-generated futures trip double_must_use on methods returning Result
+#![allow(clippy::double_must_use)]
 use clap::{Parser, Subcommand};
 use crossterm::{
     cursor,
@@ -25,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{interval, sleep};
 use tui::auth::AppAuth;
-use tui::theme::{apply_gradient, logo, logo_cyan, SHAI_YELLOW};
+use tui::theme::logo_cyan;
 use tui::App;
 
 #[cfg(unix)]
@@ -385,8 +387,6 @@ async fn handle_main(
     restore_session_id: Option<String>,
     initial_modal: Option<tui::app::InitialModal>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let logo = logo();
-    println!("{}", apply_gradient(&logo, SHAI_YELLOW, SHAI_YELLOW));
     let mut app = App::new();
     if let Some(modal) = initial_modal {
         app.initial_modal = modal;
@@ -401,8 +401,6 @@ async fn handle_main_with_prompt(
     agent_name: Option<String>,
     prompt: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let logo = logo();
-    println!("{}", apply_gradient(&logo, SHAI_YELLOW, SHAI_YELLOW));
     let mut app = App::new();
     app.initial_prompt = Some(prompt);
     if let Err(e) = app.run(agent_name, None).await {
@@ -574,7 +572,7 @@ pub async fn handle_postcmd(
                     if let Some(rational) = &res.short_rational {
                         eprintln!("\n\x1b[2m{}\x1b[0m\n", rational);
                     }
-                    eprintln!("\x1b[38;5;206m❯\x1b[0m \x1b[1m{}\x1b[0m", &res.fixed_cli);
+                    eprintln!("\x1b[38;5;206m❯\x1b[0m \x1b[1m{}\x1b[0m", res.fixed_cli);
                     eprintln!("\n\x1b[2m ↵ Run • Esc / Ctrl+C Cancel\x1b[0m");
 
                     io::stdout().execute(cursor::MoveUp(3)).unwrap();

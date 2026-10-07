@@ -2,7 +2,7 @@ use super::perm::PermissionWidget;
 
 pub enum AppModalState<'a> {
     InputShown,
-    PermissionModal { widget: PermissionWidget<'a> },
+    PermissionModal { widget: Box<PermissionWidget<'a>> },
 }
 
 pub struct UiState<'a> {

@@ -272,16 +272,17 @@ impl App<'_> {
 
     fn refresh_status_bar(&mut self) {
         if let Ok(cwd) = std::env::current_dir() {
-            self.status_bar
-                .set_location(&cwd.to_string_lossy().to_string());
+            self.status_bar.set_location(cwd.to_string_lossy().as_ref());
         }
-        if let Ok(output) = std::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-        {
-            if output.status.success() {
-                let branch = String::from_utf8_lossy(&output.stdout);
-                self.status_bar.set_git_branch(branch.trim());
+        if self.status_bar.git_needs_refresh() {
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+            {
+                if output.status.success() {
+                    let branch = String::from_utf8_lossy(&output.stdout);
+                    self.status_bar.set_git_branch(branch.trim());
+                }
             }
         }
         self.status_bar
@@ -292,7 +293,7 @@ impl App<'_> {
 // UI-related Internals
 impl App<'_> {
     pub fn new() -> Self {
-        let theme = Theme::from_env();
+        let theme = Theme::from_config();
         let palette = theme.palette();
         let shortcuts = Shortcuts::load();
         let mut input = InputArea::new(palette);
@@ -375,6 +376,9 @@ impl App<'_> {
             terminal.clear()?;
         }
 
+        self.renderer
+            .history_mut()
+            .add_text(&super::theme::welcome_text());
         if !banner.is_empty() {
             self.renderer.history_mut().add_text(&banner);
         }

@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use super::command::CommandRegistry;
+use super::theme::ThemePalette;
 use shai_core::config::tui::{KeyBinding, TuiConfig};
 
 pub struct HelpArea;
@@ -90,10 +91,10 @@ impl HelpArea {
         self.helper_msg().lines().count() as u16
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect) {
+    pub fn draw(&self, f: &mut Frame, area: Rect, palette: &ThemePalette) {
         let helper_text = self.helper_msg();
         let x = helper_text.into_text().unwrap();
-        let x = x.style(Style::default().fg(Color::White));
+        let x = x.style(Style::default().fg(palette.input_text));
         f.render_widget(x, area);
     }
 }

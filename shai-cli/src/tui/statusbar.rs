@@ -1,6 +1,6 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Widget,
     Frame,
@@ -51,11 +51,20 @@ pub struct StatusBarInfo {
     pub tool_call_method: String,
 }
 
+/// Minimum interval between git branch refreshes
+const GIT_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Pure throttle check: refresh when never refreshed or interval elapsed
+fn should_refresh(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|t| now.duration_since(t) >= GIT_REFRESH_INTERVAL)
+}
+
 pub struct StatusBar {
     info: StatusBarInfo,
     theme: Theme,
     notification: Option<String>,
     notification_until: Option<std::time::Instant>,
+    last_git_refresh: Option<std::time::Instant>,
 }
 
 impl StatusBar {
@@ -74,6 +83,19 @@ impl StatusBar {
             theme,
             notification: None,
             notification_until: None,
+            last_git_refresh: None,
+        }
+    }
+
+    /// Returns true when the git branch should be refreshed (at most once per
+    /// `GIT_REFRESH_INTERVAL`), recording the refresh time.
+    pub fn git_needs_refresh(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        if should_refresh(self.last_git_refresh, now) {
+            self.last_git_refresh = Some(now);
+            true
+        } else {
+            false
         }
     }
 
@@ -124,22 +146,30 @@ impl StatusBar {
     }
 
     pub fn draw(&self, f: &mut Frame, area: Rect) {
+        let palette = self.theme.palette();
+        let primary = Style::default()
+            .fg(palette.chip_primary_fg)
+            .bg(palette.chip_primary_bg);
+        let secondary = Style::default()
+            .fg(palette.chip_secondary_fg)
+            .bg(palette.chip_secondary_bg);
+        let accent = Style::default()
+            .fg(palette.chip_accent_fg)
+            .bg(palette.chip_accent_bg);
+        let warn = Style::default()
+            .fg(palette.chip_warn_fg)
+            .bg(palette.chip_warn_bg);
+
         let mut spans = vec![
-            Span::styled(
-                format!(" \u{2388} {} ", self.info.provider),
-                Style::default().fg(Color::Black).bg(Color::Cyan),
-            ),
-            Span::styled(
-                format!(" \u{2756} {} ", self.info.model),
-                Style::default().fg(Color::White).bg(Color::DarkGray),
-            ),
+            Span::styled(format!(" \u{2388} {} ", self.info.provider), primary),
+            Span::styled(format!(" \u{2756} {} ", self.info.model), secondary),
         ];
 
         // Location (shown after model if available)
         if !self.info.location.is_empty() {
             spans.push(Span::styled(
                 format!(" \u{2AFD} {} ", shorten_path(&self.info.location)),
-                Style::default().fg(Color::Black).bg(Color::Yellow),
+                warn,
             ));
         }
 
@@ -147,23 +177,20 @@ impl StatusBar {
         if !self.info.git_branch.is_empty() {
             spans.push(Span::styled(
                 format!(" \u{2325} {} ", self.info.git_branch),
-                Style::default().fg(Color::White).bg(Color::DarkGray),
+                secondary,
             ));
         }
 
         // Agent mode (shown after git branch)
         if !self.info.agent_mode.is_empty() {
-            spans.push(Span::styled(
-                format!(" {} ", self.info.agent_mode),
-                Style::default().fg(Color::Black).bg(Color::Green),
-            ));
+            spans.push(Span::styled(format!(" {} ", self.info.agent_mode), accent));
         }
 
         // Tool call method (shown only when customized by user)
         if !self.info.tool_call_method.is_empty() {
             spans.push(Span::styled(
                 format!(" {} ", self.info.tool_call_method),
-                Style::default().fg(Color::Black).bg(Color::Magenta),
+                warn,
             ));
         }
 
@@ -175,10 +202,7 @@ impl StatusBar {
             }
         }
         if !notification_str.is_empty() {
-            spans.push(Span::styled(
-                notification_str,
-                Style::default().fg(Color::Black).bg(Color::Yellow),
-            ));
+            spans.push(Span::styled(notification_str, warn));
         }
 
         // Right-aligned: tokens
@@ -196,13 +220,45 @@ impl StatusBar {
         let spaces = padding.saturating_sub(left_len + right_len);
         let spacer = " ".repeat(spaces);
 
-        spans.push(Span::styled(spacer, Style::default().bg(Color::DarkGray)));
         spans.push(Span::styled(
-            token_str,
-            Style::default().fg(Color::White).bg(Color::DarkGray),
+            spacer,
+            Style::default().bg(palette.chip_secondary_bg),
         ));
+        spans.push(Span::styled(token_str, secondary));
 
         let line = Line::from(spans);
         f.render_widget(line, area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn test_should_refresh_when_never_refreshed() {
+        assert!(should_refresh(None, Instant::now()));
+    }
+
+    #[test]
+    fn test_should_refresh_throttles_within_interval() {
+        let now = Instant::now();
+        let last = now - Duration::from_millis(500);
+        assert!(!should_refresh(Some(last), now));
+    }
+
+    #[test]
+    fn test_should_refresh_after_interval_elapsed() {
+        let now = Instant::now();
+        let last = now - Duration::from_secs(3);
+        assert!(should_refresh(Some(last), now));
+    }
+
+    #[test]
+    fn test_git_needs_refresh_first_call_then_throttled() {
+        let mut bar = StatusBar::new(Theme::Dark);
+        assert!(bar.git_needs_refresh());
+        assert!(!bar.git_needs_refresh());
     }
 }
