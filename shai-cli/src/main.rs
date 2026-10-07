@@ -50,6 +50,9 @@ use shell::rc::{get_shell, ShellType};
 
 use crate::headless::tools::list_all_tools;
 
+/// Sentinel value for `--restore` used without a session ID (opens the picker).
+const RESTORE_PICKER_SENTINEL: &str = "@picker";
+
 #[derive(Parser)]
 #[command(name = "shai")]
 #[command(about = "SHAI - Smart terminal wrapper with advanced features")]
@@ -78,8 +81,9 @@ struct Cli {
     /// Show version information
     #[arg(short, long)]
     version: bool,
-    /// Restore a previous session by session ID
-    #[arg(short, long)]
+    /// Restore a previous session by session ID.
+    /// Without an ID, opens the session picker (TUI only).
+    #[arg(short, long, num_args = 0..=1, default_missing_value = "@picker")]
     restore: Option<String>,
     /// Restore the most recent session automatically
     #[arg(long)]
@@ -291,6 +295,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Handle --prompt flag (headless mode)
             if let Some(prompt) = cli.prompt {
+                if cli.restore.as_deref() == Some(RESTORE_PICKER_SENTINEL) {
+                    eprintln!(
+                        "--restore without a session ID requires the TUI. \
+                         Use --restore <id>, --latest, or `shai session`."
+                    );
+                    return Ok(());
+                }
                 let mut messages = vec![prompt];
                 if let Some(ref stdin_content) = stdin_input {
                     messages.push(stdin_content.clone());
@@ -309,6 +320,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Handle piped stdin without --prompt
             if let Some(stdin_content) = stdin_input {
+                if cli.restore.as_deref() == Some(RESTORE_PICKER_SENTINEL) {
+                    eprintln!(
+                        "--restore without a session ID requires the TUI. \
+                         Use --restore <id>, --latest, or `shai session`."
+                    );
+                    return Ok(());
+                }
                 if cli.interactive {
                     // Interactive mode: show TUI with piped content as initial prompt
                     handle_main_with_prompt(cli.agent.clone(), stdin_content).await?;
@@ -329,6 +347,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // No input, show TUI
+            if cli.restore.as_deref() == Some(RESTORE_PICKER_SENTINEL) {
+                // Bare `--restore`: open the session picker
+                handle_main(
+                    cli.agent.clone(),
+                    None,
+                    Some(tui::app::InitialModal::SessionPicker),
+                )
+                .await?;
+                return Ok(());
+            }
             let restore_id = if cli.latest {
                 match shai_core::session::SessionPersist::list_sessions() {
                     Ok(sessions) if !sessions.is_empty() => Some(sessions[0].session_id.clone()),

@@ -11,7 +11,7 @@ These flags work with most commands.
 | `-p`, `--prompt <text>` | Run in headless mode with the given prompt |
 | `-a`, `--agent <name>` | Use a specific agent |
 | `-i`, `--interactive` | Pipe input then show TUI with context |
-| `-r`, `--restore <id>` | Restore a previous session by ID |
+| `-r`, `--restore [id]` | Restore a previous session by ID; without an ID, opens the session picker (TUI only) |
 | `--latest` | Restore the most recent session |
 | `--trace` | Dump entire trace upon completion (headless mode only) |
 | `--temperature <float>` | Set the LLM sampling temperature |
@@ -31,6 +31,7 @@ shai                        # Default TUI
 shai -a myagent            # TUI with a custom agent
 shai --latest              # TUI restoring the most recent session
 shai -r <session-id>      # TUI restoring a specific session
+shai -r                   # TUI with the session picker
 ```
 
 ### `shai auth`
