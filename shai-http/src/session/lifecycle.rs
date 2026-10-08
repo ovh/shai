@@ -3,8 +3,7 @@ use tokio::sync::OwnedMutexGuard;
 use tracing::{info, warn};
 
 use crate::session::logger::colored_session_id;
-use crate::session::persist::SessionPersist;
-
+use shai_core::session::SessionPersist;
 
 pub enum RequestLifecycle {
     Background {
@@ -20,10 +19,23 @@ pub enum RequestLifecycle {
 }
 
 impl RequestLifecycle {
-    pub fn new(ephemeral: bool, controller_guard: OwnedMutexGuard<AgentController>, request_id: String, session_id: String) -> Self {
+    pub fn new(
+        ephemeral: bool,
+        controller_guard: OwnedMutexGuard<AgentController>,
+        request_id: String,
+        session_id: String,
+    ) -> Self {
         match ephemeral {
-            true => Self::Ephemeral { controller_guard, request_id, session_id },
-            false => Self::Background { controller_guard, request_id, session_id },
+            true => Self::Ephemeral {
+                controller_guard,
+                request_id,
+                session_id,
+            },
+            false => Self::Background {
+                controller_guard,
+                request_id,
+                session_id,
+            },
         }
     }
 }
@@ -31,7 +43,11 @@ impl RequestLifecycle {
 impl Drop for RequestLifecycle {
     fn drop(&mut self) {
         match self {
-            Self::Background { controller_guard, request_id, session_id } => {
+            Self::Background {
+                controller_guard,
+                request_id,
+                session_id,
+            } => {
                 info!(
                     "[{}] - {} Stream completed, releasing controller lock (background session)",
                     request_id,
@@ -54,7 +70,11 @@ impl Drop for RequestLifecycle {
                     }
                 });
             }
-            Self::Ephemeral { controller_guard, request_id, session_id } => {
+            Self::Ephemeral {
+                controller_guard,
+                request_id,
+                session_id,
+            } => {
                 info!(
                     "[{}] - {} Stream completed, destroying agent (ephemeral session)",
                     request_id,

@@ -1,14 +1,13 @@
-/// Streaming event types for OpenAI Response API
-/// These types are not yet available in openai_dive, so we define them locally.
-///
-/// Reference: https://platform.openai.com/docs/api-reference/responses-streaming
-
-use serde::{Deserialize, Serialize};
+use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
 use openai_dive::v1::resources::response::{
     request::{ContentInput, ContentItem, ResponseInput, ResponseInputItem, ResponseParameters},
     response::{ResponseObject, ResponseOutput, Role},
 };
-use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
+/// Streaming event types for OpenAI Response API
+/// These types are not yet available in openai_dive, so we define them locally.
+///
+/// Reference: https://platform.openai.com/docs/api-reference/responses-streaming
+use serde::{Deserialize, Serialize};
 
 /// Base streaming event structure
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -40,6 +39,7 @@ pub enum ResponseEventType {
 /// Event data for streaming events
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum ResponseEventData {
     /// response.created, response.in_progress, response.completed
     Response {
@@ -86,7 +86,11 @@ impl ResponseStreamEvent {
     }
 
     /// Create a response.output_item.added event
-    pub fn output_item_added(sequence_number: u32, output_index: usize, item: ResponseOutput) -> Self {
+    pub fn output_item_added(
+        sequence_number: u32,
+        output_index: usize,
+        item: ResponseOutput,
+    ) -> Self {
         Self {
             event_type: ResponseEventType::ResponseOutputItemAdded,
             data: ResponseEventData::OutputItem {
@@ -98,7 +102,11 @@ impl ResponseStreamEvent {
     }
 
     /// Create a response.output_item.done event
-    pub fn output_item_done(sequence_number: u32, output_index: usize, item: ResponseOutput) -> Self {
+    pub fn output_item_done(
+        sequence_number: u32,
+        output_index: usize,
+        item: ResponseOutput,
+    ) -> Self {
         Self {
             event_type: ResponseEventType::ResponseOutputItemDone,
             data: ResponseEventData::OutputItem {
@@ -204,19 +212,17 @@ pub fn build_message_trace(params: &ResponseParameters) -> Vec<ChatMessage> {
                         Role::Assistant => {
                             let text = match &msg.content {
                                 ContentInput::Text(t) => t.clone(),
-                                ContentInput::List(items) => {
-                                    items
-                                        .iter()
-                                        .filter_map(|item| {
-                                            if let ContentItem::Text { text } = item {
-                                                Some(text.clone())
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                }
+                                ContentInput::List(items) => items
+                                    .iter()
+                                    .filter_map(|item| {
+                                        if let ContentItem::Text { text } = item {
+                                            Some(text.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
                             };
                             trace.push(ChatMessage::Assistant {
                                 content: Some(ChatMessageContent::Text(text)),

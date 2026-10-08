@@ -1,0 +1,11 @@
+{
+  "name": "add-metadata-field",
+  "category": "refactor",
+  "difficulty": "easy",
+  "setup": "curl -sL https://github.com/ovh/shai/archive/refs/tags/v0.1.10.tar.gz | tar xz -C . && cd shai-0.1.10/shai-core",
+  "goal": "Add a new field called 'metadata' to the ThinkerDecision struct in src/agent/brain.rs that holds an optional HashMap<String, String>. Update all constructors to initialize it to None. Fix any code that destructures ThinkerDecision so it still compiles.",
+  "prompts": [],
+  "verify": [
+    { "command": "cargo check" }
+  ]
+}

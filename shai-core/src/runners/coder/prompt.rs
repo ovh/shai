@@ -1,6 +1,7 @@
-use std::sync::Arc;
 use std::fs;
-use std::sync::OnceLock;
+use std::sync::Arc;
+
+use tracing::{debug, warn};
 
 use crate::tools::{AnyTool, ToolResult};
 
@@ -34,12 +35,25 @@ When modifying code, adhere to the existing style, libraries, and patterns of th
  * Use the provided tools to interact with the user's environment.
  * Do not use comments in code to communicate with the user.
  * Use the `todo_write` and `todo_read` tools to plan and track your work, especially for complex tasks. This provide visibility to the user. You must use these tools extensively.
+ * Prefer dedicated tools over bash commands:
+   - Use `read` instead of `cat`, `less`, `head`, `tail`, or `bat`
+   - Use `find` instead of `grep` or `find` commands
+   - Use `ls` instead of `ls` or `dir` commands
+   - Use `edit` instead of `sed`, `awk`, or `perl` for file modifications
+   - Use `write` instead of redirect operators (`>`, `>>`)
+   - Use `bash` only for compiling, testing, running scripts, git operations, and other commands without a dedicated tool
+ * When exploring an unfamiliar codebase, use `outline: true` on the first read to understand file structure before reading full content.
+ * Tool parameters are always JSON objects. Pass arrays and objects directly — never stringify them.
+   Example: {"files": [{"path": "src/main.rs"}]} not {"files": "[{\\\"path\\\": \\\"src/main.rs\\\"}]" }
 
 **No Surprises:** 
 Do not commit changes to version control unless explicitly asked to do so by the user.
 
 **Proactiveness**
 You are allowed to be proactive and take initiative that are aligned with the user intent. For instance if the user asks you to make a function, you can proactively follow your implementation with a call to compile / test the project to make sure that your change were correct. You must however avoid proactively taking actions that are out of scope or unnecessary. For instance if the user asks you to modify a function, you should not immediately assume that this function should be used everywhere. You have to strike a balance between helpfulness, autonomy while also keeping the user in the loop.
+
+**Batch Error Fixes**
+When fixing compilation or test errors, address ALL errors in a single pass before re-running the build or test command. Read all error messages, fix every issue, then verify with a single check. Avoid running the same command repeatedly after each individual fix.
 "#;
 
 static CODER_ENV: &str = r#"
@@ -59,13 +73,99 @@ static CODER_PROMPT: &str = r#"{{CODER_GUIDELINE}}
 
 {{SHAI_PROMPT}}
 
-{{CODER_ENV}}"#;
+{{MEMORY}}
 
-static SHAI_PROMPT: &str = r#"
---- Begin SHAI.md (project explanations/instructions) ---
-{{SHAI}}
---- End SHAI.md ---
-"#;
+{{CODER_ENV}}
+
+{{SKILLS}}"#;
+/// Compact AGENTS.md content by extracting headers and first paragraph under each section.
+/// Code blocks are stripped to reduce token overhead while preserving the key context.
+fn compact_agents_content(content: &str) -> String {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current_header: Option<String> = None;
+    let mut current_body = String::new();
+    let mut in_code_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if !in_code_block && trimmed.starts_with('#') {
+            if let Some(header) = current_header.take() {
+                sections.push((header, std::mem::take(&mut current_body)));
+            }
+            current_header = Some(trimmed.trim_start_matches('#').trim().to_string());
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+    if let Some(header) = current_header {
+        sections.push((header, std::mem::take(&mut current_body)));
+    }
+
+    let mut result = String::new();
+    for (header, body) in sections {
+        let body_trimmed = body.trim();
+        if body_trimmed.is_empty() {
+            continue;
+        }
+        result.push_str(&format!("## {}\n", header));
+        let mut first_para_done = false;
+        for line in body_trimmed.lines() {
+            if line.trim().is_empty() {
+                if first_para_done {
+                    break;
+                }
+                continue;
+            }
+            result.push_str(line);
+            result.push('\n');
+            first_para_done = true;
+        }
+        result.push('\n');
+    }
+    result.trim_end().to_string()
+}
+
+/// Load AGENTS.md from the git root (or CWD if not in a git repo).
+/// Returns empty string if not found or on error.
+fn load_agents_content() -> String {
+    let base = find_git_root().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let agents_path = base.join("AGENTS.md");
+    match fs::read_to_string(&agents_path) {
+        Ok(content) => compact_agents_content(&content),
+        Err(e) => {
+            if agents_path.exists() {
+                warn!(target: "brain::coder", "Failed to read AGENTS.md: {}", e);
+            }
+            String::new()
+        }
+    }
+}
+
+/// Load SHAI.md from the git root (or CWD if not in a git repo).
+/// Returns empty string if not found or on error.
+fn load_shai_content() -> String {
+    let base = find_git_root().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let shai_path = base.join("SHAI.md");
+    match fs::read_to_string(&shai_path) {
+        Ok(content) => {
+            if !content.is_empty() {
+                warn!(target: "brain::coder", "SHAI.md is deprecated, please consider migrating to AGENTS.md");
+            }
+            content
+        }
+        Err(e) => {
+            if shai_path.exists() {
+                warn!(target: "brain::coder", "Failed to read SHAI.md: {}", e);
+            }
+            String::new()
+        }
+    }
+}
 
 static CODER_PROMPT_GIT: &str = r#"
 <git>
@@ -88,7 +188,7 @@ pub fn render_system_prompt_template(template: &str) -> String {
     }
 
     let mut result = template.to_string();
-    
+
     // Only gather environment info if needed
     if result.contains("{{TODAY}}") {
         result = result.replace("{{TODAY}}", &get_today());
@@ -127,12 +227,15 @@ pub fn render_system_prompt_template(template: &str) -> String {
         let git_repo = is_git_repo();
         let mut coder_base_prompt = CODER_PROMPT
             .replace("{{CODER_GUIDELINE}}", CODER_GUIDELINE)
-            .replace("{{CODER_ENV}}", &CODER_ENV
-                .replace("{{TODAY}}", &get_today())
-                .replace("{{PLATFORM}}", &get_platform())
-                .replace("{{OS_VERSION}}", &get_os_version())
-                .replace("{{WORKING_DIR}}", &get_working_dir())
-                .replace("{{IS_GIT_REPO}}", &git_repo.to_string()));
+            .replace(
+                "{{CODER_ENV}}",
+                &CODER_ENV
+                    .replace("{{TODAY}}", &get_today())
+                    .replace("{{PLATFORM}}", &get_platform())
+                    .replace("{{OS_VERSION}}", &get_os_version())
+                    .replace("{{WORKING_DIR}}", &get_working_dir())
+                    .replace("{{IS_GIT_REPO}}", &git_repo.to_string()),
+            );
 
         if git_repo {
             let git_info = CODER_PROMPT_GIT
@@ -147,20 +250,50 @@ pub fn render_system_prompt_template(template: &str) -> String {
     // Insert SHAI content if placeholder present (load once)
     // Also handle SHAI_PROMPT placeholder
     if result.contains("{{SHAI_PROMPT}}") {
-        static SHAI_CONTENT: OnceLock<String> = OnceLock::new();
-        let content = SHAI_CONTENT.get_or_init(|| fs::read_to_string("SHAI.md").unwrap_or_default());
+        let agents_content = load_agents_content();
+        let shai_content = load_shai_content();
 
-        if !content.is_empty() {
+        if !agents_content.is_empty() || !shai_content.is_empty() {
+            let mut combined = String::new();
+            if !agents_content.is_empty() {
+                combined.push_str("--- Begin AGENTS.md (project instructions) ---\n");
+                combined.push_str(&agents_content);
+                combined.push_str("\n--- End AGENTS.md ---\n");
+            }
+            if !shai_content.is_empty() {
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str("--- Begin SHAI.md (legacy override) ---\n");
+                combined.push_str(&shai_content);
+                combined.push_str("\n--- End SHAI.md ---");
+            }
             result = result
-                .replace("{{SHAI_PROMPT}}", SHAI_PROMPT)
-                .replace("{{SHAI}}", content);
+                .replace("{{SHAI_PROMPT}}", &combined)
+                .replace("{{SHAI}}", &shai_content);
         } else {
             result = result.replace("{{SHAI_PROMPT}}", "");
         }
     }
 
+    // Insert memory content if placeholder present
+    if result.contains("{{MEMORY}}") {
+        let memory = crate::tools::memory::load_merged_memory();
+        result = result.replace("{{MEMORY}}", &memory);
+    }
+
+    // Inject skill catalog if placeholder present
+    if result.contains("{{SKILLS}}") {
+        let skills = crate::tools::skills::discovery::discover_skills();
+        let catalog = crate::tools::skills::discovery::format_skill_catalog(&skills);
+        result = result.replace("{{SKILLS}}", &catalog);
+    }
+
     // Only get git info if individual git placeholders are used
-    if result.contains("{{GIT_BRANCH}}") || result.contains("{{GIT_STATUS}}") || result.contains("{{GIT_LOG}}") {
+    if result.contains("{{GIT_BRANCH}}")
+        || result.contains("{{GIT_STATUS}}")
+        || result.contains("{{GIT_LOG}}")
+    {
         if is_git_repo() {
             if result.contains("{{GIT_BRANCH}}") {
                 result = result.replace("{{GIT_BRANCH}}", &get_git_branch());
@@ -186,7 +319,6 @@ pub fn coder_next_step() -> String {
     render_system_prompt_template("{{CODER_BASE_PROMPT}}")
 }
 
-
 static TODO_STATUS: &str = r#"
 <todo>
 todoStatus: This is the current status of the todo list
@@ -197,15 +329,14 @@ todoStatus: This is the current status of the todo list
 
 pub async fn get_todo_read(todo_tool: &Arc<dyn AnyTool>) -> String {
     let todo = todo_tool.execute_json(serde_json::json!({}), None).await;
-    if let ToolResult::Success { output, metadata } = todo {
-        TODO_STATUS.to_string()
-        .replace("{{TODO_LIST}}", &output)
+    if let ToolResult::Success { output, .. } = todo {
+        TODO_STATUS.to_string().replace("{{TODO_LIST}}", &output)
     } else {
-        TODO_STATUS.to_string()
-        .replace("{{TODO_LIST}}", "the todo list is empty..")
+        TODO_STATUS
+            .to_string()
+            .replace("{{TODO_LIST}}", "the todo list is empty..")
     }
 }
-
 
 static CODER_CHECK_GOAL: &str = r#"
 You are an interactive CLI tool called that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user. 
@@ -223,6 +354,25 @@ Though achieving user's objective is the principal objective, it may happen that
 If you reply is NO, then you must explain to yourself why upon further investigation you think you can do more in this round.
 "#;
 
+pub static PLAN_MODE_PROMPT: &str = r#"
+## PLAN MODE
+
+You are in PLAN mode. Your ONLY job is to analyze the request and produce a detailed step-by-step plan. Do NOT write, create, or modify any files. Do NOT execute any commands. Do NOT call any tool that modifies files or executes commands.
+
+### Rules
+- You MUST NOT call any tool that modifies files or executes commands. This includes `write`, `edit`, `bash`, `multiedit`, and any other mutating tool.
+- You MAY use read-only tools (`read`, `find`, `ls`, `grep`) to explore the codebase and gather context.
+- Do NOT write, create, or modify any files.
+- Do NOT attempt to execute any changes — just plan them.
+
+### Output Format
+Produce a clear, numbered plan outlining:
+1. What files need to be created or modified.
+2. What changes need to be made in each file.
+3. Any dependencies or prerequisites.
+
+Do not attempt to execute the plan. Just describe it.
+"#;
 
 pub fn coder_check_goal() -> String {
     CODER_CHECK_GOAL.to_string()

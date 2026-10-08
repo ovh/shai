@@ -1,21 +1,15 @@
-pub mod client;
-pub mod providers;
-pub mod provider;
+#![allow(clippy::module_inception)]
 pub mod chat;
-pub mod tool;
+pub mod client;
 pub mod logging;
+pub mod provider;
+pub mod providers;
+pub mod tool;
 
 // Re-export our client
 pub use client::LlmClient;
 
 pub use tool::{
-    ToolDescription, 
-    ToolCallMethod,
-    ToolBox,
-    ContainsTool,
-    StructuredOutputBuilder, 
-    AssistantResponse, 
-    IntoChatMessage, 
-    FunctionCallingAutoBuilder, 
-    FunctionCallingRequiredBuilder};
-
+    AssistantResponse, ContainsTool, FunctionCallingAutoBuilder, FunctionCallingRequiredBuilder,
+    IntoChatMessage, StructuredOutputBuilder, ToolBox, ToolCallMethod, ToolDescription,
+};

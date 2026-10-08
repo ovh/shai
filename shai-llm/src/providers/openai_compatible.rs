@@ -1,11 +1,11 @@
 // llm/providers/openai_compatible.rs
-use crate::provider::{LlmProvider, LlmError, LlmStream, ProviderInfo, EnvVar};
+use crate::provider::{EnvVar, LlmError, LlmProvider, LlmStream, ProviderInfo};
 use async_trait::async_trait;
 use futures::StreamExt;
 use openai_dive::v1::{
     api::Client,
     resources::{
-        chat::{ChatCompletionParameters, ChatCompletionResponse, ChatCompletionChunkResponse},
+        chat::{ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse},
         model::ListModelResponse,
         shared::Usage,
     },
@@ -26,11 +26,12 @@ impl OpenAICompatibleProvider {
     /// Create OpenAI Compatible provider from environment variables
     /// Returns None if required environment variables are not set
     pub fn from_env() -> Option<Self> {
-        match (std::env::var("OPENAI_COMPATIBLE_API_KEY"), std::env::var("OPENAI_COMPATIBLE_BASE_URL")) {
-            (Ok(api_key), Ok(base_url)) => {
-                Some(Self::new(api_key, base_url))
-            }
-            _ => None
+        match (
+            std::env::var("OPENAI_COMPATIBLE_API_KEY"),
+            std::env::var("OPENAI_COMPATIBLE_BASE_URL"),
+        ) {
+            (Ok(api_key), Ok(base_url)) => Some(Self::new(api_key, base_url)),
+            _ => None,
         }
     }
 }
@@ -41,23 +42,35 @@ impl LlmProvider for OpenAICompatibleProvider {
         super::models::list_models_compat(&self.client).await
     }
 
-    async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {
-        let mut response = self.client.chat().create(request).await
+    async fn chat(
+        &self,
+        request: ChatCompletionParameters,
+    ) -> Result<ChatCompletionResponse, LlmError> {
+        let mut response = self
+            .client
+            .chat()
+            .create(request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
 
         Ok(response)
     }
 
-    async fn chat_stream(&self, mut request: ChatCompletionParameters) -> Result<LlmStream, LlmError> {
+    async fn chat_stream(
+        &self,
+        mut request: ChatCompletionParameters,
+    ) -> Result<LlmStream, LlmError> {
         // Ensure streaming is enabled
         request.stream = Some(true);
-        
-        let stream = self.client.chat().create_stream(request).await
+
+        let stream = self
+            .client
+            .chat()
+            .create_stream(request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
 
-        let converted_stream = stream.map(|result| {
-            result.map_err(|e| Box::new(e) as LlmError)
-        });
+        let converted_stream = stream.map(|result| result.map_err(|e| Box::new(e) as LlmError));
 
         Ok(Box::new(Box::pin(converted_stream)))
     }
@@ -73,17 +86,21 @@ impl LlmProvider for OpenAICompatibleProvider {
     fn name(&self) -> &'static str {
         "openai_compatible"
     }
-    
+
     fn info() -> ProviderInfo {
         ProviderInfo {
             name: "openai_compatible",
             display_name: "OpenAI Compatible API",
             env_vars: vec![
-                EnvVar::required("OPENAI_COMPATIBLE_API_KEY", "API key for OpenAI-compatible service"),
-                EnvVar::required("OPENAI_COMPATIBLE_BASE_URL", "Base URL for OpenAI-compatible service"),
+                EnvVar::required(
+                    "OPENAI_COMPATIBLE_API_KEY",
+                    "API key for OpenAI-compatible service",
+                ),
+                EnvVar::required(
+                    "OPENAI_COMPATIBLE_BASE_URL",
+                    "Base URL for OpenAI-compatible service",
+                ),
             ],
         }
     }
-    
 }
-

@@ -1,15 +1,14 @@
+use super::mcp_config::OAuthToken;
 use oauth2::{
-    AuthUrl, TokenUrl, ClientId, ClientSecret, RedirectUrl, CsrfToken,
-    AuthorizationCode, PkceCodeChallenge, Scope,
-    basic::BasicClient, reqwest::async_http_client, TokenResponse,
-    AuthType, url::Url,
+    basic::BasicClient, reqwest::async_http_client, url::Url, AuthType, AuthUrl, AuthorizationCode,
+    ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenResponse,
+    TokenUrl,
 };
-use warp::Filter;
-use std::sync::{Arc, Mutex};
 use reqwest;
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
-use super::mcp_config::OAuthToken;
+use warp::Filter;
 
 #[derive(Serialize)]
 struct ClientRegistrationRequest {
@@ -30,23 +29,19 @@ pub async fn signin_oauth(base_url: &str) -> anyhow::Result<OAuthToken> {
     let url = Url::parse(base_url)?;
     let root_url = format!("{}://{}", url.scheme(), url.host_str().unwrap_or(""));
     let well_known_url = format!("{}/.well-known/oauth-authorization-server", root_url);
-    
+
     let client = reqwest::Client::new();
-    let oauth_metadata: serde_json::Value = client
-        .get(&well_known_url)
-        .send()
-        .await?
-        .json()
-        .await?;
-    
+    let oauth_metadata: serde_json::Value =
+        client.get(&well_known_url).send().await?.json().await?;
+
     let auth_endpoint = oauth_metadata["authorization_endpoint"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("No authorization_endpoint in OAuth metadata"))?;
-    
+
     let token_endpoint = oauth_metadata["token_endpoint"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("No token_endpoint in OAuth metadata"))?;
-    
+
     let registration_endpoint = oauth_metadata["registration_endpoint"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("No registration_endpoint in OAuth metadata"))?;
@@ -91,7 +86,7 @@ pub async fn signin_oauth(base_url: &str) -> anyhow::Result<OAuthToken> {
         .add_scope(Scope::new("all".to_string()))
         .url();
 
-    if webbrowser::open(&auth_url.to_string()).is_err() {
+    if webbrowser::open(auth_url.as_str()).is_err() {
         println!("Please open this URL in your browser: {}", auth_url);
     }
 
@@ -123,7 +118,7 @@ pub async fn signin_oauth(base_url: &str) -> anyhow::Result<OAuthToken> {
                 } else {
                     "❌ Missing required parameters.".to_string()
                 };
-                
+
                 warp::reply::html(format!(
                     r#"<!DOCTYPE html>
                     <html>

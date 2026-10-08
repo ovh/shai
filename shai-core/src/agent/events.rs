@@ -1,14 +1,14 @@
-use std::sync::Arc;
-use std::future::Future;
-use futures::future::BoxFuture;
-use openai_dive::v1::resources::chat::ChatMessage;
-use serde::{Serialize, Deserialize};
-use async_trait::async_trait;
 use super::brain::ThinkerDecision;
 use super::AgentError;
 use crate::agent::PublicAgentState;
-use crate::tools::{ToolResult, ToolCall};
+use crate::tools::{ToolCall, ToolResult};
+use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
+use futures::future::BoxFuture;
+use openai_dive::v1::resources::chat::ChatMessage;
+use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::sync::Arc;
 
 /// Internal events for agent state machine communication
 /// These events are used internally between agent components and state handlers
@@ -22,33 +22,31 @@ pub enum InternalAgentEvent {
     ThinkingStart,
     /// Brain completed and returned a result for the next step
     BrainResult {
-        result: Result<ThinkerDecision, AgentError>
+        result: Result<ThinkerDecision, AgentError>,
     },
     /// Agent started executing a tool
-    ToolCallStarted { 
+    ToolCallStarted {
         timestamp: DateTime<Utc>,
-        call: ToolCall 
+        call: ToolCall,
     },
     /// Tool execution completed and returned a result
     ToolCallCompleted {
         duration: TimeDelta,
         call: ToolCall,
-        result: ToolResult
+        result: ToolResult,
     },
     /// All tools completed execution
-    ToolsCompleted {
-        any_denied: bool,
-    },
+    ToolsCompleted { any_denied: bool },
     /// User response received from controller
-    UserResponseReceived { 
+    UserResponseReceived {
         request_id: String,
-        response: UserResponse
+        response: UserResponse,
     },
     /// Permission response received from controller
-    PermissionResponseReceived { 
+    PermissionResponseReceived {
         request_id: String,
-        response: PermissionResponse
-    }
+        response: PermissionResponse,
+    },
 }
 
 /// Public events emitted to external controllers/UI
@@ -56,39 +54,39 @@ pub enum InternalAgentEvent {
 #[derive(Clone)]
 pub enum AgentEvent {
     /// Agent status has changed
-    StatusChanged { 
-        old_status: PublicAgentState, 
-        new_status: PublicAgentState 
+    StatusChanged {
+        old_status: PublicAgentState,
+        new_status: PublicAgentState,
     },
     /// Thinking Start
     ThinkingStart,
     /// Agent is thinking - provides the thought content to display to user
-    BrainResult { 
+    BrainResult {
         timestamp: DateTime<Utc>,
-        thought: Result<ChatMessage, AgentError>
+        thought: Result<ChatMessage, AgentError>,
     },
     /// Agent started executing a tool
-    ToolCallStarted { 
+    ToolCallStarted {
         timestamp: DateTime<Utc>,
-        call: ToolCall 
+        call: ToolCall,
     },
     /// Tool execution completed and returned a result
     ToolCallCompleted {
         duration: TimeDelta,
         call: ToolCall,
-        result: ToolResult
+        result: ToolResult,
+        original_bytes: usize,
+        compacted_bytes: usize,
     },
     /// User provided input to the agent
-    UserInput { 
-        input: String,
-    },
+    UserInput { input: String },
     /// Agent requires user input to continue
-    UserInputRequired { 
+    UserInputRequired {
         request_id: String,
         request: UserRequest,
     },
     /// Agent requires permission to perform an action
-    PermissionRequired { 
+    PermissionRequired {
         request_id: String,
         request: PermissionRequest,
     },
@@ -99,7 +97,12 @@ pub enum AgentEvent {
     /// Token usage information from LLM response
     TokenUsage {
         input_tokens: u32,
-        output_tokens: u32
+        output_tokens: u32,
+        cached_tokens: u32,
+    },
+    /// Todo list was updated
+    TodoUpdated {
+        todos: Vec<crate::tools::todo::TodoItem>,
     },
 }
 
@@ -109,9 +112,9 @@ pub enum UserRequest {
     /// Free text input
     Text { prompt: String },
     /// Multiple choice selection
-    Choice { 
-        prompt: String, 
-        options: Vec<String> 
+    Choice {
+        prompt: String,
+        options: Vec<String>,
     },
     /// Yes/No confirmation
     Confirmation { prompt: String },
@@ -142,7 +145,7 @@ pub struct PermissionRequest {
     /// Additional details about the request
     pub call: ToolCall,
     /// Preview of what the tool would do (if available)
-    pub preview: Option<ToolResult>
+    pub preview: Option<ToolResult>,
 }
 
 /// Response to a permission request
@@ -209,70 +212,82 @@ where
 impl std::fmt::Debug for AgentEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AgentEvent::StatusChanged { old_status, new_status } => {
-                f.debug_struct("StatusChanged")
-                    .field("old_status", old_status)
-                    .field("new_status", new_status)
-                    .finish()
-            }
-            AgentEvent::ThinkingStart => {
-                f.debug_struct("ThinkingStart")
-                    .finish()
-            }
-            AgentEvent::BrainResult { timestamp, thought } => {
-                f.debug_struct("BrainResult")
-                    .field("timestamp", timestamp)
-                    .field("thought", thought)
-                    .finish()
-            }
-            AgentEvent::ToolCallStarted { timestamp, call } => {
-                f.debug_struct("ToolCallStarted")
-                    .field("timestamp", timestamp)
-                    .field("call", call)
-                    .finish()
-            }
-            AgentEvent::ToolCallCompleted { duration, call, result } => {
-                f.debug_struct("ToolCallCompleted")
-                    .field("timestamp", duration)
-                    .field("call", call)
-                    .field("result", result)
-                    .finish()
-            }
+            AgentEvent::StatusChanged {
+                old_status,
+                new_status,
+            } => f
+                .debug_struct("StatusChanged")
+                .field("old_status", old_status)
+                .field("new_status", new_status)
+                .finish(),
+            AgentEvent::ThinkingStart => f.debug_struct("ThinkingStart").finish(),
+            AgentEvent::BrainResult { timestamp, thought } => f
+                .debug_struct("BrainResult")
+                .field("timestamp", timestamp)
+                .field("thought", thought)
+                .finish(),
+            AgentEvent::ToolCallStarted { timestamp, call } => f
+                .debug_struct("ToolCallStarted")
+                .field("timestamp", timestamp)
+                .field("call", call)
+                .finish(),
+            AgentEvent::ToolCallCompleted {
+                duration,
+                call,
+                result,
+                original_bytes,
+                compacted_bytes,
+            } => f
+                .debug_struct("ToolCallCompleted")
+                .field("timestamp", duration)
+                .field("call", call)
+                .field("result", result)
+                .field("original_bytes", original_bytes)
+                .field("compacted_bytes", compacted_bytes)
+                .finish(),
             AgentEvent::UserInput { input } => {
-                f.debug_struct("UserInput")
-                    .field("input", input)
-                    .finish()
+                f.debug_struct("UserInput").field("input", input).finish()
             }
-            AgentEvent::UserInputRequired { request_id: input_id, request: input_type, .. } => {
+            AgentEvent::UserInputRequired {
+                request_id: input_id,
+                request: input_type,
+                ..
+            } => {
                 f.debug_struct("UserInputRequired")
                     .field("input_id", input_id)
                     .field("input_type", input_type)
                     //.field("response_channel", &"<oneshot::Sender>")
                     .finish()
             }
-            AgentEvent::PermissionRequired { request_id, request, .. } => {
+            AgentEvent::PermissionRequired {
+                request_id,
+                request,
+                ..
+            } => {
                 f.debug_struct("PermissionRequired")
                     .field("request_id", request_id)
                     .field("request", request)
                     //.field("response_channel", &"<oneshot::Sender>")
                     .finish()
             }
-            AgentEvent::Error { error } => {
-                f.debug_struct("Error")
-                    .field("error", error)
-                    .finish()
-            }
-            AgentEvent::Completed { success, message } => {
-                f.debug_struct("Completed")
-                    .field("success", success)
-                    .field("message", message)
-                    .finish()
-            }
-            AgentEvent::TokenUsage { input_tokens, output_tokens } => {
-                f.debug_struct("TokenUsage")
-                    .field("input_tokens", input_tokens)
-                    .field("output_tokens", output_tokens)
-                    .finish()
+            AgentEvent::Error { error } => f.debug_struct("Error").field("error", error).finish(),
+            AgentEvent::Completed { success, message } => f
+                .debug_struct("Completed")
+                .field("success", success)
+                .field("message", message)
+                .finish(),
+            AgentEvent::TokenUsage {
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+            } => f
+                .debug_struct("TokenUsage")
+                .field("input_tokens", input_tokens)
+                .field("output_tokens", output_tokens)
+                .field("cached_tokens", cached_tokens)
+                .finish(),
+            AgentEvent::TodoUpdated { todos } => {
+                f.debug_struct("TodoUpdated").field("todos", todos).finish()
             }
         }
     }

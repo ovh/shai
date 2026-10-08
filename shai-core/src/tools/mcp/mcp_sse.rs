@@ -1,14 +1,17 @@
 use async_trait::async_trait;
 use rmcp::{
-    model::{CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation, InitializeRequestParam},
-    service::{ServiceExt, RunningService},
+    model::{
+        CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation,
+        InitializeRequestParam,
+    },
+    service::{RunningService, ServiceExt},
     transport::SseClientTransport,
     RoleClient,
 };
 use std::borrow::Cow;
 
-use crate::tools::{ToolResult, ToolCall};
 use super::mcp::{McpClient, McpToolDescription};
+use crate::tools::{ToolCall, ToolResult};
 
 pub struct SseClient {
     url: String,
@@ -17,10 +20,7 @@ pub struct SseClient {
 
 impl SseClient {
     pub fn new(url: String) -> Self {
-        Self {
-            url,
-            service: None,
-        }
+        Self { url, service: None }
     }
 }
 
@@ -31,7 +31,7 @@ impl McpClient for SseClient {
         if self.service.is_some() {
             return Ok(());
         }
-        
+
         let transport = SseClientTransport::start(self.url.as_str()).await?;
         let client_info = ClientInfo {
             protocol_version: Default::default(),
@@ -53,10 +53,12 @@ impl McpClient for SseClient {
         Ok(())
     }
 
-    async fn list_tools(&self) -> Result<Vec<McpToolDescription>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_tools(
+        &self,
+    ) -> Result<Vec<McpToolDescription>, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
         let tools_result = service.list_tools(Default::default()).await?;
-        
+
         let tool_descriptions = tools_result
             .tools
             .into_iter()
@@ -66,13 +68,16 @@ impl McpClient for SseClient {
                 parameters_schema: serde_json::Value::Object((*tool.input_schema).clone()),
             })
             .collect();
-        
+
         Ok(tool_descriptions)
     }
 
-    async fn execute_tool(&self, tool_call: ToolCall) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
+    async fn execute_tool(
+        &self,
+        tool_call: ToolCall,
+    ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
-        
+
         let result = service
             .call_tool(CallToolRequestParam {
                 name: Cow::Owned(tool_call.tool_name.clone()),
@@ -85,9 +90,13 @@ impl McpClient for SseClient {
             .into_iter()
             .map(|c| match c.raw {
                 rmcp::model::RawContent::Text(text_content) => text_content.text,
-                rmcp::model::RawContent::Image(image_data) => format!("[Image: {} bytes]", image_data.data.len()),
-                rmcp::model::RawContent::Resource(_) => format!("[Resource]"),
-                rmcp::model::RawContent::Audio(audio_data) => format!("[Audio: {} bytes]", audio_data.data.len()),
+                rmcp::model::RawContent::Image(image_data) => {
+                    format!("[Image: {} bytes]", image_data.data.len())
+                }
+                rmcp::model::RawContent::Resource(_) => "[Resource]".to_string(),
+                rmcp::model::RawContent::Audio(audio_data) => {
+                    format!("[Audio: {} bytes]", audio_data.data.len())
+                }
             })
             .collect::<Vec<_>>()
             .join("\n");

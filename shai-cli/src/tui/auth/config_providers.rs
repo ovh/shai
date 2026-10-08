@@ -1,4 +1,3 @@
-use std::io;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -10,6 +9,7 @@ use ratatui::{
 };
 use shai_core::config::config::ShaiConfig;
 use shai_llm::provider::ProviderInfo;
+use std::io;
 
 use super::auth::NavAction;
 
@@ -20,13 +20,6 @@ pub struct ModalProviders {
     selected_provider: usize,
 }
 
-#[derive(Debug)]
-pub enum ProviderAction {
-    None,
-    Selected(usize),
-    Exit,
-}
-
 impl ModalProviders {
     pub fn new(config: ShaiConfig, providers: Vec<ProviderInfo>) -> Self {
         Self {
@@ -34,14 +27,6 @@ impl ModalProviders {
             providers,
             selected_provider: 0,
         }
-    }
-
-    pub fn selected_provider(&self) -> ProviderInfo {
-        self.providers[self.selected_provider].clone()
-    }
-
-    pub fn providers(&self) -> &[ProviderInfo] {
-        &self.providers
     }
 
     pub fn extract_state(self) -> (ShaiConfig, Vec<ProviderInfo>, ProviderInfo) {
@@ -63,12 +48,8 @@ impl ModalProviders {
                     self.selected_provider += 1;
                 }
             }
-            KeyCode::Enter => {
-                return NavAction::Next
-            }
-            KeyCode::Esc => {
-                return NavAction::Back
-            }
+            KeyCode::Enter => return NavAction::Next,
+            KeyCode::Esc => return NavAction::Back,
             _ => {}
         }
         NavAction::None
@@ -77,42 +58,54 @@ impl ModalProviders {
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
         let [list, help] = Layout::vertical(vec![
             Constraint::Length(2 + self.providers.len() as u16),
-            Constraint::Length(1)
-        ]).areas(area);
+            Constraint::Length(1),
+        ])
+        .areas(area);
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .padding(Padding { left: 1, right: 1, top: 0, bottom: 0 })
+            .padding(Padding {
+                left: 1,
+                right: 1,
+                top: 0,
+                bottom: 0,
+            })
             .title(" Select AI Provider ")
             .style(Style::default().fg(Color::DarkGray));
 
         let mut lines = vec![];
         for (i, provider) in self.providers.iter().enumerate() {
-            let prefix = if i == self.selected_provider { "● " } else { "○ " };
-            let line = format!("{}{}", prefix, provider.name);
-            
-            if i == self.selected_provider {
-                lines.push(Line::from(vec![
-                    Span::styled(line, Style::default().fg(Color::Green))
-                ]));
+            let prefix = if i == self.selected_provider {
+                "● "
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled(line, Style::default().fg(Color::DarkGray))
-                ]));
+                "○ "
+            };
+            let line = format!("{}{}", prefix, provider.name);
+
+            if i == self.selected_provider {
+                lines.push(Line::from(vec![Span::styled(
+                    line,
+                    Style::default().fg(Color::Green),
+                )]));
+            } else {
+                lines.push(Line::from(vec![Span::styled(
+                    line,
+                    Style::default().fg(Color::DarkGray),
+                )]));
             }
         }
-        
+
         let text = Text::from(lines);
         let paragraph = Paragraph::new(text).block(block);
         frame.render_widget(paragraph, list);
 
-        frame.render_widget(Line::from(vec![
-            Span::styled(" ↑↓ navigate • Enter select • Esc exit", Style::default().fg(Color::DarkGray))
-        ]), help);
-    }
-
-    pub fn height(&self) -> usize {
-        2 + self.providers.len() + 1
+        frame.render_widget(
+            Line::from(vec![Span::styled(
+                " ↑↓ navigate • Enter select • Esc exit",
+                Style::default().fg(Color::DarkGray),
+            )]),
+            help,
+        );
     }
 }

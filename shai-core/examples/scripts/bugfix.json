@@ -1,0 +1,11 @@
+{
+  "name": "fix-never-pauses",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "setup": "curl -sL https://github.com/ovh/shai/archive/refs/tags/v0.1.10.tar.gz | tar xz -C . && cd shai-0.1.10/shai-core && sed -i 's/ThinkerFlowControl::AgentPause => {/ThinkerFlowControl::AgentContinue => {/' src/agent/actions/brain.rs",
+  "goal": "There is a bug in the agent loop: after processing a brain response with no tool calls, the agent never pauses. Investigate the flow control logic in src/agent/actions/brain.rs and fix the bug so that the agent correctly pauses when ThinkerFlowControl::AgentPause is returned.",
+  "prompts": [],
+  "verify": [
+    { "command": "cargo check" }
+  ]
+}

@@ -1,8 +1,9 @@
-use super::structs::EditToolParams;
 use super::super::{FsOperationLog, FsOperationType};
+use super::structs::EditToolParams;
+use crate::tools::fs::hash::compute_line_hash;
 use crate::tools::{tool, ToolResult};
-use similar::{ChangeTag, TextDiff};
 use serde_json::json;
+use similar::{ChangeTag, TextDiff};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -29,13 +30,13 @@ impl EditTool {
     pub fn myers_diff(&self, before_content: &str, after_content: &str) -> String {
         let diff = TextDiff::from_lines(before_content, after_content);
 
-        // Check if there are any changes
-        let has_changes = diff.iter_all_changes().any(|change| change.tag() != ChangeTag::Equal);
+        let has_changes = diff
+            .iter_all_changes()
+            .any(|change| change.tag() != ChangeTag::Equal);
         if !has_changes {
             return "No changes".to_string();
         }
 
-        // Collect all changes with their positions and metadata
         #[derive(Debug)]
         struct ChangeInfo {
             tag: ChangeTag,
@@ -48,7 +49,6 @@ impl EditTool {
         let mut line_num_old = 1;
         let mut line_num_new = 1;
 
-        // Collect all changes first
         for change in diff.iter_all_changes() {
             let change_info = ChangeInfo {
                 tag: change.tag(),
@@ -59,7 +59,6 @@ impl EditTool {
 
             all_changes.push(change_info);
 
-            // Update line numbers
             match change.tag() {
                 ChangeTag::Delete => line_num_old += 1,
                 ChangeTag::Insert => line_num_new += 1,
@@ -70,7 +69,6 @@ impl EditTool {
             }
         }
 
-        // Find positions of actual changes (not Equal)
         let mut change_positions = Vec::new();
         for (idx, change) in all_changes.iter().enumerate() {
             if change.tag != ChangeTag::Equal {
@@ -82,23 +80,19 @@ impl EditTool {
             return "No changes".to_string();
         }
 
-        // Calculate ranges to show (changes + context)
         let mut ranges_to_show = Vec::new();
         let context = self.context_lines;
 
         let mut current_start = change_positions[0].saturating_sub(context);
         let mut current_end = (change_positions[0] + context + 1).min(all_changes.len());
 
-        // Merge overlapping ranges
         for &pos in &change_positions[1..] {
             let range_start = pos.saturating_sub(context);
             let range_end = (pos + context + 1).min(all_changes.len());
 
-            // If ranges overlap or are adjacent, merge them
             if range_start <= current_end {
                 current_end = range_end;
             } else {
-                // Save current range and start new one
                 ranges_to_show.push((current_start, current_end));
                 current_start = range_start;
                 current_end = range_end;
@@ -106,21 +100,17 @@ impl EditTool {
         }
         ranges_to_show.push((current_start, current_end));
 
-        // Generate focused diff output
         let mut diff_output = Vec::new();
 
         for (range_idx, &(start, end)) in ranges_to_show.iter().enumerate() {
-            // Add separator between ranges (if there are multiple ranges)
             if range_idx > 0 {
                 diff_output.push("\x1b[2;37m...\x1b[0m".to_string());
             }
 
-            // Show lines in this range
-            for i in start..end {
-                let change = &all_changes[i];
+            for change in &all_changes[start..end] {
                 let (sign, style) = match change.tag {
-                    ChangeTag::Delete => ("-", "\x1b[48;5;88;37m"),  // Dark red background
-                    ChangeTag::Insert => ("+", "\x1b[48;5;28;37m"),  // Dark green background
+                    ChangeTag::Delete => ("-", "\x1b[48;5;88;37m"),
+                    ChangeTag::Insert => ("+", "\x1b[48;5;28;37m"),
                     ChangeTag::Equal => (" ", ""),
                 };
 
@@ -131,20 +121,14 @@ impl EditTool {
                 };
 
                 if change.tag == ChangeTag::Equal {
-                    // Context line
                     diff_output.push(format!(
                         "\x1b[2;37m{:4}\x1b[0m   {}",
-                        line_no,
-                        change.content
+                        line_no, change.content
                     ));
                 } else {
-                    // Changed line
                     diff_output.push(format!(
                         "\x1b[2;37m{:4}\x1b[0m {}{} {}\x1b[0m",
-                        line_no,
-                        style,
-                        sign,
-                        change.content
+                        line_no, style, sign, change.content
                     ));
                 }
             }
@@ -153,11 +137,70 @@ impl EditTool {
         diff_output.join("\n")
     }
 
+    pub fn perform_edit_on_content(
+        &self,
+        content: &str,
+        old_string: &str,
+        new_string: &str,
+        replace_all: bool,
+        line_hash: Option<&str>,
+        insert_after_hash: Option<&str>,
+    ) -> Result<(String, usize), String> {
+        // Handle insert after hash
+        if let Some(hash) = insert_after_hash {
+            let lines: Vec<&str> = content.lines().collect();
+            let mut new_lines: Vec<String> = Vec::new();
+            let mut insertions = 0;
 
-    pub fn perform_edit_on_content(&self, content: &str, old_string: &str, new_string: &str, replace_all: bool) -> Result<(String, usize), String> {
+            for line in &lines {
+                new_lines.push(line.to_string());
+                if compute_line_hash(line) == hash && (replace_all || insertions == 0) {
+                    new_lines.push(new_string.to_string());
+                    insertions += 1;
+                }
+            }
+
+            if insertions == 0 {
+                return Err(format!(
+                    "Line hash '{}' not found in file (file may have changed)",
+                    hash
+                ));
+            }
+
+            return Ok((new_lines.join("\n"), insertions));
+        }
+
+        // Handle line hash replacement
+        if let Some(hash) = line_hash {
+            let lines: Vec<&str> = content.lines().collect();
+            let mut replacements = 0;
+            let mut new_lines: Vec<String> = Vec::new();
+
+            for line in &lines {
+                if compute_line_hash(line) == hash && (replace_all || replacements == 0) {
+                    new_lines.push(new_string.to_string());
+                    replacements += 1;
+                } else {
+                    new_lines.push(line.to_string());
+                }
+            }
+
+            if replacements == 0 {
+                return Err(format!(
+                    "Line hash '{}' not found in file (file may have changed)",
+                    hash
+                ));
+            }
+
+            return Ok((new_lines.join("\n"), replacements));
+        }
+
         // Check if the old_string exists in the content
         if !content.contains(old_string) {
-            return Err("Pattern not found in file".to_string());
+            return Err(format!(
+                "Pattern '{}' not found in file. Re-read the file to get current content.",
+                old_string.chars().take(80).collect::<String>()
+            ));
         }
 
         // Perform the replacement
@@ -176,47 +219,36 @@ impl EditTool {
     pub fn commit_edit(&self, path: &str, new_content: &str) -> Result<(), String> {
         fs::write(path, new_content).map_err(|e| e.to_string())
     }
-
-    fn perform_edit(&self, params: &EditToolParams, preview: bool) -> Result<(String, usize), String> {
-        let path = Path::new(&params.path);
-
-        // Check if file exists
-        if !path.exists() {
-            return Err(format!("File does not exist: {}", params.path));
-        }
-
-        // Read the file content
-        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-
-        // Perform edit on content
-        let (new_content, replacements) = self.perform_edit_on_content(&content, &params.old_string, &params.new_string, params.replace_all)?;
-
-        // Generate proper diff using Myers' algorithm
-        let diff = self.myers_diff(&content, &new_content);
-        
-        let mut diff_output = Vec::new();
-        diff_output.push("".to_string());
-        diff_output.push(diff);
-
-        // Only write to file if not preview mode
-        if !preview {
-            self.commit_edit(&params.path, &new_content)?;
-        }
-
-        Ok((diff_output.join("\n"), replacements))
-    }
 }
 
-#[tool(name = "edit", description = r#"Facilitates targeted modifications within a file by replacing a specific segment of text. This tool is for surgical precision.
+#[tool(name = "edit", description = r#"Executes find-and-replace operations across one or more files atomically. All edits are applied in memory first; if any edit fails, no files are modified.
 
-**Prerequisites:**
-- Before using this tool, you are required to have inspected the file's content using the `read` tool in the current conversation. An attempt to edit a file without prior reading will result in an error.
+**Parameters:**
+- `files`: Array of `{ path, edits: [{ old_string, new_string, replace_all?, line_hash?, insert_after_hash? }] }`
 
-**Usage Guidelines:**
-- The `old_string` parameter demands an exact, literal match of the text to be replaced. This includes all whitespace and indentation. When copying text from the `read` tool's output, you must omit the line number prefix.
-- The operation will fail if the `old_string` is not unique within the file. To resolve this, provide more surrounding context to make the `old_string` unique.
-- For situations where you intend to replace every occurrence of a string (e.g., renaming a variable), set the `replace_all` parameter to `true`.
-- Prioritize modifying existing files. Avoid creating new files unless the task explicitly requires it.
+**Edit Modes:**
+- **String replacement**: Set `old_string` and `new_string` to replace text within the file.
+- **Hash-anchored replacement**: Set `line_hash` to target specific line(s) by their hash from the `read` output. Replaces the entire line(s) with `new_string`.
+- **Insertion**: Set `insert_after_hash` to insert `new_string` after the line(s) matching the hash.
+
+**Critical:**
+- You must first use the `read` tool to inspect any file before editing it.
+- Edits within each file are applied sequentially.
+- The entire operation is atomic — if any edit fails, no files are modified.
+
+**Examples:**
+Replace text in a file:
+```json
+{"files": [{"path": "src/main.rs", "edits": [{"old_string": "fn main() {", "new_string": "fn main() -> Result<(), Box<dyn std::error::Error> {"}]}]}
+```
+Replace all occurrences:
+```json
+{"files": [{"path": "src/lib.rs", "edits": [{"old_string": "todo!()", "new_string": "unimplemented!()", "replace_all": true}]}]}
+```
+Edit multiple files atomically:
+```json
+{"files": [{"path": "src/mod.rs", "edits": [{"old_string": "foo", "new_string": "bar"}]}, {"path": "src/lib.rs", "edits": [{"old_string": "baz", "new_string": "qux"}]}]}
+```
 "#, capabilities = [ToolCapability::Read, ToolCapability::Write])]
 impl EditTool {
     async fn execute_preview(&self, params: EditToolParams) -> Option<ToolResult> {
@@ -228,44 +260,113 @@ impl EditTool {
     }
 
     async fn execute_internal(&self, params: EditToolParams, preview: bool) -> ToolResult {
-        // Validate that old_string and new_string are different
-        if params.old_string == params.new_string {
-            return ToolResult::error("old_string and new_string cannot be the same".to_string());
+        if params.files.is_empty() {
+            return ToolResult::error("At least one file edit is required".to_string());
         }
 
-        // Validate that the file has been read first
-        if let Err(err) = self.operation_log.validate_edit_permission(&params.path).await {
-            return ToolResult::error(err);
-        }
-
-        match self.perform_edit(&params, preview) {
-            Ok((message, replacement_count)) => {
-                // Log the edit operation only if not preview
-                if !preview {
-                    self.operation_log.log_operation(FsOperationType::Edit, params.path.clone()).await;
-                }
-                
-                let mut meta = HashMap::new();
-                meta.insert("path".to_string(), json!(params.path));
-                meta.insert("old_string".to_string(), json!(params.old_string));
-                meta.insert("new_string".to_string(), json!(params.new_string));
-                meta.insert("replace_all".to_string(), json!(params.replace_all));
-                meta.insert("replacements_made".to_string(), json!(replacement_count));
-                meta.insert("preview_mode".to_string(), json!(preview));
-
-                // Add file size information
-                if let Ok(metadata) = std::fs::metadata(&params.path) {
-                    meta.insert("file_size_bytes".to_string(), json!(metadata.len()));
-                }
-
-                ToolResult::Success {
-                    output: message,
-                    metadata: Some(meta),
-                }
-            },
-            Err(e) => {
-                ToolResult::error(format!("Edit {} failed: {}", if preview { "preview" } else { "" }, e))
+        // Phase 1: Validate all files have been read
+        for file_edit in &params.files {
+            if let Err(err) = self
+                .operation_log
+                .validate_edit_permission(&file_edit.path)
+                .await
+            {
+                return ToolResult::error(err);
             }
+        }
+
+        // Phase 2: Apply all edits in memory
+        let mut staged_writes: Vec<(String, String)> = Vec::new();
+        let mut diffs = Vec::new();
+
+        for file_edit in &params.files {
+            let path = Path::new(&file_edit.path);
+
+            if !path.exists() {
+                return ToolResult::error(format!("File does not exist: {}", file_edit.path));
+            }
+
+            let mut current_content = match fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => return ToolResult::error(format!("Failed to read file: {}", e)),
+            };
+            let original_content = current_content.clone();
+
+            for (index, edit) in file_edit.edits.iter().enumerate() {
+                match self.perform_edit_on_content(
+                    &current_content,
+                    &edit.old_string,
+                    &edit.new_string,
+                    edit.replace_all,
+                    edit.line_hash.as_deref(),
+                    edit.insert_after_hash.as_deref(),
+                ) {
+                    Ok((new_content, _replacements)) => {
+                        current_content = new_content;
+                    }
+                    Err(error) => {
+                        return ToolResult::error(format!(
+                            "File '{}', Edit #{}: {}",
+                            file_edit.path,
+                            index + 1,
+                            error
+                        ));
+                    }
+                }
+            }
+
+            let diff = self.myers_diff(&original_content, &current_content);
+            diffs.push((file_edit.path.clone(), diff));
+            staged_writes.push((file_edit.path.clone(), current_content));
+        }
+
+        // Phase 3: Write all files (only after all edits succeeded)
+        if !preview {
+            for (file_path, content) in &staged_writes {
+                if let Err(e) = self.commit_edit(file_path, content) {
+                    return ToolResult::error(format!("Failed to write '{}': {}", file_path, e));
+                }
+            }
+        }
+
+        // Phase 4: Log all operations
+        if !preview {
+            for file_edit in &params.files {
+                self.operation_log
+                    .log_operation(FsOperationType::Edit, file_edit.path.clone())
+                    .await;
+            }
+        }
+
+        let mut meta = HashMap::new();
+        meta.insert("file_count".to_string(), json!(params.files.len()));
+        meta.insert(
+            "total_edits".to_string(),
+            json!(params.files.iter().map(|f| f.edits.len()).sum::<usize>()),
+        );
+        meta.insert("preview_mode".to_string(), json!(preview));
+
+        let file_details: Vec<serde_json::Value> = params
+            .files
+            .iter()
+            .map(|f| {
+                json!({
+                    "path": f.path,
+                    "edit_count": f.edits.len(),
+                })
+            })
+            .collect();
+        meta.insert("files".to_string(), json!(file_details));
+
+        let combined_diff = diffs
+            .iter()
+            .map(|(path, diff)| format!("=== {} ===\n{}", path, diff))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        ToolResult::Success {
+            output: combined_diff,
+            metadata: Some(meta),
         }
     }
 }

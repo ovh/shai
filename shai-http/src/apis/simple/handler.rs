@@ -2,12 +2,14 @@ use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response, Sse},
 };
-use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent, ToolCall as LlmToolCall, Function};
+use openai_dive::v1::resources::chat::{
+    ChatMessage, ChatMessageContent, Function, ToolCall as LlmToolCall,
+};
 use tracing::info;
 use uuid::Uuid;
 
-use super::types::{MultiModalQuery, Message};
 use super::formatter::SimpleFormatter;
+use super::types::{Message, MultiModalQuery};
 use crate::{session_to_sse_stream, ApiJson, ErrorResponse, ServerState};
 
 /// Handle multimodal query without explicit session id (ephemeral session)
@@ -37,8 +39,7 @@ async fn handle_multimodal_query_stream_internal(
 
     // Determine session_id: use provided, or generate ephemeral
     let is_ephemeral = session_id_param.is_none();
-    let session_id = session_id_param
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let session_id = session_id_param.unwrap_or_else(|| Uuid::new_v4().to_string());
 
     info!(
         "[{}] POST /v1/multimodal/{} model={} ephemeral={}",
@@ -51,20 +52,40 @@ async fn handle_multimodal_query_stream_internal(
     // Get or create session agent
     let agent_session = if is_ephemeral {
         // Ephemeral -> create new session
-        state.session_manager
-            .create_new_session(&request_id.to_string(), &session_id, Some(payload.model.clone()), is_ephemeral)
+        state
+            .session_manager
+            .create_new_session(
+                &request_id.to_string(),
+                &session_id,
+                Some(payload.model.clone()),
+                is_ephemeral,
+            )
             .await
-            .map_err(|e| ErrorResponse::internal_error(format!("Failed to create session: {}", e)))?
+            .map_err(|e| {
+                ErrorResponse::internal_error(format!("Failed to create session: {}", e))
+            })?
     } else {
         // Persistent -> get existing (from memory or disk) or create new
-        match state.session_manager.get_session(&request_id.to_string(), &session_id, payload.model.clone()).await {
+        match state
+            .session_manager
+            .get_session(&request_id.to_string(), &session_id, payload.model.clone())
+            .await
+        {
             Ok(session) => session,
             Err(_) => {
                 // Doesn't exist in memory or disk, create it
-                state.session_manager
-                    .create_new_session(&request_id.to_string(), &session_id, Some(payload.model.clone()), is_ephemeral)
+                state
+                    .session_manager
+                    .create_new_session(
+                        &request_id.to_string(),
+                        &session_id,
+                        Some(payload.model.clone()),
+                        is_ephemeral,
+                    )
                     .await
-                    .map_err(|e| ErrorResponse::internal_error(format!("Failed to create session: {}", e)))?
+                    .map_err(|e| {
+                        ErrorResponse::internal_error(format!("Failed to create session: {}", e))
+                    })?
             }
         }
     };
@@ -83,7 +104,6 @@ async fn handle_multimodal_query_stream_internal(
 
     Ok(Sse::new(stream).into_response())
 }
-
 
 /// Build message trace from query
 fn build_message_trace(query: &MultiModalQuery) -> Vec<ChatMessage> {

@@ -4,5 +4,5 @@ pub mod todo;
 #[cfg(test)]
 mod tests;
 
-pub use structs::{TodoStorage, TodoItem, TodoStatus};
-pub use todo::{TodoReadTool, TodoWriteTool, TodoWriteParams, TodoItemInput};
+pub use structs::{TodoItem, TodoStatus, TodoStorage};
+pub use todo::{TodoItemInput, TodoReadTool, TodoWriteParams, TodoWriteTool};

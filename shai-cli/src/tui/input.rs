@@ -1,36 +1,49 @@
-use std::time::{Instant, Duration};
-use std::fs;
-use std::path::Path;
+use std::time::{Duration, Instant};
 
+use arboard::Clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::io;
-use cli_clipboard::{ClipboardContext, ClipboardProvider};
-use jwalk::WalkDir;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     symbols::border,
-    text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Widget, List, ListItem},
+    text::Span,
+    widgets::{Block, Borders, Padding, Widget},
     Frame,
 };
-use shai_core::agent::{AgentController, AgentEvent, PublicAgentState};
-use shai_llm::{tool::call_fc_auto::ToolCallFunctionCallingAuto, ToolCallMethod};
-use tui_textarea::{Input, TextArea};
+use shai_llm::ToolCallMethod;
+use ratatui_textarea::{Input as TextInput, TextArea};
 
-use crate::{tui::{cmdnav::CommandNav, helper::HelpArea}};
+use crate::tui::helper::HelpArea;
 
-use super::theme::{SHAI_YELLOW, ThemePalette};
+use super::suggestion::{CommandSuggestion, FileSuggestion};
+use super::shortcuts::key_event_to_binding;
+use super::theme::ThemePalette;
+use shai_core::config::tui::KeyBinding;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentMode {
+    Plan,
+    Manual,
+    Auto,
+}
+
+impl AgentMode {
+    pub fn status_bar_str(&self) -> String {
+        let symbol = match self {
+            AgentMode::Plan => "\u{2612}",   // ☒
+            AgentMode::Manual => "\u{2610}",  // ☐
+            AgentMode::Auto => "\u{2611}",   // ☑
+        };
+        format!("{} {:?}", symbol, self)
+    }
+}
 
 pub enum UserAction {
     Nope,
     CancelTask,
-    UserInput {
-        input: String
-    },
-    UserAppCommand {
-        command: String
-    }
+    UserInput { input: String },
+    UserAppCommand { command: String },
 }
 
 pub struct InputArea<'a> {
@@ -57,24 +70,25 @@ pub struct InputArea<'a> {
 
     // method info bottom right
     method: ToolCallMethod,
+    agent_mode: AgentMode,
 
     // bottom helper
     help: Option<HelpArea>,
-    cmdnav: CommandNav,
 
     history: Vec<String>,
     history_index: usize,
 
-    // file suggestions
-    file_suggestions: Vec<String>,
-    suggestion_index: Option<usize>,
-    suggestion_search: Option<String>,
+    // suggestions
+    file_suggestion: FileSuggestion,
+    cmd_suggestion: CommandSuggestion,
 
-    // gitignore patterns (loaded once)
-    gitignore_patterns: Vec<String>,
-    
     // theme colors
     palette: ThemePalette,
+
+    // configurable key bindings
+    cancel_task_binding: KeyBinding,
+    clear_input_binding: KeyBinding,
+    paste_binding: KeyBinding,
 }
 
 impl InputArea<'_> {
@@ -82,7 +96,7 @@ impl InputArea<'_> {
         Self {
             agent_running: false,
             input: TextArea::default(),
-            placeholder: "? for shortcuts".to_string(),
+            placeholder: "? for help".to_string(),
             current_draft: None,
             animation_start: None,
             status_message: None,
@@ -93,18 +107,60 @@ impl InputArea<'_> {
             helper_duration: None,
             escape_press_time: None,
             method: ToolCallMethod::FunctionCall,
+            agent_mode: AgentMode::Manual,
             help: None,
-            cmdnav: CommandNav{},
             history: Vec::new(),
             history_index: 0,
-            file_suggestions: Vec::new(),
-            suggestion_index: None,
-            suggestion_search: None,
-            gitignore_patterns: Self::load_gitignore_patterns(),
+            file_suggestion: FileSuggestion::new(),
+            cmd_suggestion: CommandSuggestion::new(),
             palette,
+            // defaults — overridden by set_shortcuts()
+            cancel_task_binding: KeyBinding::new(
+                shai_core::config::tui::KeyCode::Escape,
+                shai_core::config::tui::KeyModifiers::NONE,
+            ),
+            clear_input_binding: KeyBinding::new(
+                shai_core::config::tui::KeyCode::Escape,
+                shai_core::config::tui::KeyModifiers::NONE,
+            ),
+            paste_binding: KeyBinding::new(
+                shai_core::config::tui::KeyCode::Char('v'),
+                shai_core::config::tui::KeyModifiers::CONTROL,
+            ),
         }
     }
 
+    pub fn agent_mode(&self) -> AgentMode {
+        self.agent_mode
+    }
+
+    pub fn set_agent_mode(&mut self, mode: AgentMode) {
+        self.agent_mode = mode;
+    }
+
+    pub fn cycle_agent_mode(&mut self) -> AgentMode {
+        self.agent_mode = match self.agent_mode {
+            AgentMode::Plan => AgentMode::Manual,
+            AgentMode::Manual => AgentMode::Auto,
+            AgentMode::Auto => AgentMode::Plan,
+        };
+        self.agent_mode
+    }
+
+    pub fn set_shortcuts(
+        &mut self,
+        cancel_task: KeyBinding,
+        clear_input: KeyBinding,
+        paste: KeyBinding,
+    ) {
+        self.cancel_task_binding = cancel_task;
+        self.clear_input_binding = clear_input;
+        self.paste_binding = paste;
+    }
+}
+
+/// alert message in yellow, top left
+impl InputArea<'_> {
     pub fn set_history(&mut self, history: Vec<String>) {
         self.history = history;
         self.history_index = self.history.len();
@@ -114,156 +170,12 @@ impl InputArea<'_> {
         self.palette = palette;
     }
 
-    // Parse .gitignore and return list of patterns to ignore
-    fn load_gitignore_patterns() -> Vec<String> {
-        if let Ok(content) = fs::read_to_string(".gitignore") {
-            content
-                .lines()
-                .filter_map(|line| {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        }
+    pub fn alert_msg(&mut self, text: &str, duration: Duration) {
+        self.helper_msg = Some(text.to_string());
+        self.helper_set = Some(Instant::now());
+        self.helper_duration = Some(duration);
     }
 
-    // Check if a path should be ignored based on gitignore patterns
-    fn should_ignore(path: &str, patterns: &[String]) -> bool {
-        for pattern in patterns {
-            let pattern_clean = pattern.trim_start_matches("./");
-            
-            if path.contains(pattern_clean) {
-                return true;
-            }
-            
-            if pattern.ends_with('/') {
-                let dir_pattern = pattern.trim_end_matches('/');
-                if path.contains(dir_pattern) {
-                    return true;
-                }
-            }
-            
-            if pattern.contains('*') {
-                let parts: Vec<&str> = pattern.split('*').collect();
-                if parts.len() == 2 {
-                    if path.contains(parts[0]) && path.ends_with(parts[1]) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    // Detect if cursor is after a @ and extract the search text
-    fn detect_file_search(&self) -> Option<(usize, String)> {
-        let (row, col) = self.input.cursor();
-        let line = self.input.lines().get(row)?;
-
-        // Use character indices, not byte indices
-        let chars: Vec<char> = line.chars().collect();
-        let col_safe = col.min(chars.len());
-
-        // Look for the last @ before the cursor
-        let before_cursor: String = chars.iter().take(col_safe).collect();
-        if let Some(at_pos) = before_cursor.rfind('@') {
-            // Check there's no space between @ and cursor
-            let after_at: String = before_cursor.chars().skip(at_pos + 1).collect();
-            if !after_at.contains(' ') {
-                // Return position in character count (not bytes)
-                let at_char_pos = before_cursor.chars().take(at_pos).count();
-                return Some((at_char_pos, after_at));
-            }
-        }
-        None
-    }
-
-    // Search files matching the pattern - optimized with jwalk and respecting .gitignore
-    fn search_files(&self, pattern: &str) -> Vec<String> {
-        let pattern_lower = pattern.to_lowercase();
-        let include_hidden = pattern.starts_with('.');
-        
-        WalkDir::new(".")
-            .max_depth(5)
-            .skip_hidden(!include_hidden)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let path = e.path();
-                let path_str = path.to_string_lossy().to_string();
-                
-                // Skip if matches gitignore patterns
-                if Self::should_ignore(&path_str, &self.gitignore_patterns) {
-                    return None;
-                }
-                
-                if pattern.is_empty() || path_str.to_lowercase().contains(&pattern_lower) {
-                    Some(path_str)
-                } else {
-                    None
-                }
-            })
-            .take(20)
-            .collect()
-    }
-
-    // Update suggestions based on current input
-    fn update_suggestions(&mut self) {
-        if let Some((at_pos, search)) = self.detect_file_search() {
-            if self.suggestion_search.as_ref() != Some(&search) {
-                self.suggestion_search = Some(search.clone());
-                self.file_suggestions = self.search_files(&search);
-                self.suggestion_index = if self.file_suggestions.is_empty() {
-                    None
-                } else {
-                    Some(0)
-                };
-            }
-        } else {
-            self.file_suggestions.clear();
-            self.suggestion_index = None;
-            self.suggestion_search = None;
-        }
-    }
-}
-
-
-/// method info bottom right
-impl InputArea<'_> {
-    pub fn set_tool_call_method(&mut self, method: ToolCallMethod) {
-        self.method = method;
-    }
-
-    pub fn method_str(&self) -> &str {
-        match self.method {
-            ToolCallMethod::Auto => {
-                "🛠️ tool call try all methods"
-            }
-            ToolCallMethod::FunctionCall => {
-                "🛠️ function call (auto)"
-            }
-            ToolCallMethod::FunctionCallRequired => {
-                "🛠️ function call (required)"
-            }
-            ToolCallMethod::StructuredOutput => {
-                "🛠️ structured output"
-            }
-            ToolCallMethod::Parsing => {
-                "🛠️ parsing"
-            }
-        }
-    } 
-}
-
-
-/// alert message in yellow, top left
-impl InputArea<'_> {
     pub fn set_agent_running(&mut self, running: bool) {
         self.agent_running = running;
         if running {
@@ -274,49 +186,50 @@ impl InputArea<'_> {
         }
     }
 
-    pub fn with_placeholder(mut self, placeholder: &str) -> Self {
-        self.placeholder = placeholder.to_string();
-        self
-    }
-
-    pub fn set_status(&mut self, text: &str) {
-        self.status_message = Some(text.to_string());
-    }
-
-    pub fn is_animating(&self) -> bool {
-        self.animation_start.is_some()
-    }
-
     fn get_status_text(&self) -> String {
         if let Some(ref msg) = self.status_message {
-            // Show status message if we have one (like "Task cancelled")
             format!(" {}", msg)
         } else if let Some(animation_start) = self.animation_start {
-            // Show spinner when agent is working
-            let spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let spinner_chars = [
+                "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
+                "\u{2827}", "\u{2825}", "\u{280F}",
+            ];
             let elapsed = animation_start.elapsed().as_millis();
             let index = (elapsed / 100) % spinner_chars.len() as u128;
-            format!(" {} Agent is working... (press esc to cancel)", spinner_chars[index as usize])
+            format!(
+                " {} Agent is working... (press esc to cancel)",
+                spinner_chars[index as usize]
+            )
         } else {
-            // Agent is waiting for input, no status to show
             String::new()
+        }
+    }
+}
+
+/// method info bottom right
+impl InputArea<'_> {
+    pub fn set_tool_call_method(&mut self, method: ToolCallMethod) {
+        self.method = method;
+    }
+
+    pub fn tool_call_method_str(&self) -> &'static str {
+        match self.method {
+            ToolCallMethod::Auto => "",
+            ToolCallMethod::FunctionCall => "",
+            ToolCallMethod::FunctionCallRequired => "\u{2A10}fc2",
+            ToolCallMethod::StructuredOutput => "\u{2A10}so",
+            ToolCallMethod::Parsing => "\u{2A10}ps",
         }
     }
 }
 
 /// status message bottom left
 impl InputArea<'_> {
-    pub fn alert_msg(&mut self, text: &str, duration: Duration) {
-        self.helper_msg = Some(text.to_string());
-        self.helper_set = Some(Instant::now());
-        self.helper_duration = Some(duration);
-    }
-
     pub fn check_pending_enter(&mut self) -> Option<UserAction> {
         if let Some(enter_time) = self.pending_enter {
             if enter_time.elapsed() >= Duration::from_millis(100) {
                 self.pending_enter = None;
-                
+
                 if self.agent_running {
                     return Some(UserAction::Nope);
                 }
@@ -326,17 +239,12 @@ impl InputArea<'_> {
                     let input = lines.join("\n");
                     self.history.push(input.clone());
                     self.history_index = self.history.len();
-                    
-                    // Handle app commands vs agent input
+
                     self.input = TextArea::default();
                     if input.starts_with('/') {
-                        return Some(UserAction::UserAppCommand { 
-                            command: input
-                         });
+                        return Some(UserAction::UserAppCommand { command: input });
                     } else {
-                        return Some(UserAction::UserInput { 
-                            input
-                        });
+                        return Some(UserAction::UserInput { input });
                     }
                 }
             }
@@ -345,7 +253,6 @@ impl InputArea<'_> {
     }
 
     fn check_helper_msg(&mut self) -> String {
-        // Check if escape message should be cleared after 1 second
         if let Some(helper_time) = self.helper_set {
             if helper_time.elapsed() >= self.helper_duration.unwrap() {
                 self.helper_msg = None;
@@ -354,22 +261,19 @@ impl InputArea<'_> {
                 return String::new();
             }
         }
-        
-        // Return current helper message or empty string
         self.helper_msg.as_deref().unwrap_or("").to_string()
     }
 }
-
 
 /// event related
 impl InputArea<'_> {
     fn move_cursor_to_end_of_text(&mut self) {
         for _ in 0..self.input.lines().len().saturating_sub(1) {
-            self.input.move_cursor(tui_textarea::CursorMove::Down);
+            self.input.move_cursor(ratatui_textarea::CursorMove::Down);
         }
         if let Some(last_line) = self.input.lines().last() {
             for _ in 0..last_line.len() {
-                self.input.move_cursor(tui_textarea::CursorMove::Forward);
+                self.input.move_cursor(ratatui_textarea::CursorMove::Forward);
             }
         }
     }
@@ -381,7 +285,30 @@ impl InputArea<'_> {
         }
     }
 
-    pub async fn handle_event(&mut self, key_event: KeyEvent) -> UserAction{
+    // Replace @search with the file path
+    fn replace_file_search(&mut self, file_path: &str) {
+        if let Some((at_pos, search_text)) = FileSuggestion::detect_file_search(&self.input) {
+            let cursor = self.input.cursor();
+            let _row = cursor.0;
+
+            let chars_to_delete = 1 + search_text.len();
+
+            self.input.move_cursor(ratatui_textarea::CursorMove::Head);
+            for _ in 0..at_pos {
+                self.input.move_cursor(ratatui_textarea::CursorMove::Forward);
+            }
+
+            for _ in 0..chars_to_delete {
+                self.input.delete_next_char();
+            }
+
+            self.input.insert_str(file_path);
+
+            self.file_suggestion.clear();
+        }
+    }
+
+    pub async fn handle_event(&mut self, key_event: KeyEvent) -> UserAction {
         let now = Instant::now();
         self.last_keystroke_time = Some(now);
 
@@ -394,50 +321,57 @@ impl InputArea<'_> {
                 kind: key_event.kind,
                 state: key_event.state,
             };
-            let event: Input = Event::Key(fake_event).into();
+            let event: TextInput = Event::Key(fake_event).into();
             self.input.input(event);
         }
-        
+
+        let binding = key_event_to_binding(&key_event);
+
+        // Check cancel_task / clear_input bindings
+        if binding == self.cancel_task_binding || binding == self.clear_input_binding {
+            if self.agent_running {
+                return UserAction::CancelTask;
+            }
+
+            // Handle escape key for input clearing
+            if let Some(escape_time) = self.escape_press_time {
+                // Second escape within 1 second - clear input
+                if escape_time.elapsed() < Duration::from_secs(1) {
+                    self.input = TextArea::default();
+                    self.escape_press_time = None;
+                    self.helper_msg = None;
+                    return UserAction::Nope;
+                }
+            }
+
+            // First escape or escape after timeout - show message
+            if !self.input.lines()[0].is_empty() {
+                self.escape_press_time = Some(now);
+                self.helper_set = Some(now);
+                self.helper_duration = Some(Duration::from_secs(1));
+                self.helper_msg = Some(" press esc again to clear".to_string());
+            }
+            return UserAction::Nope;
+        }
+
+        // Check paste binding
+        if binding == self.paste_binding {
+            // Handle Ctrl+V or Cmd+V paste directly from clipboard
+            if let Ok(mut ctx) = Clipboard::new() {
+                if let Ok(text) = ctx.get_text() {
+                    self.input.insert_str(text);
+                    return UserAction::Nope;
+                }
+            }
+            // Fallback: let TextArea handle it normally
+            let event: TextInput = Event::Key(key_event).into();
+            self.input.input(event);
+            return UserAction::Nope;
+        }
+
         match key_event.code {
             KeyCode::Char('?') if self.input.lines()[0].is_empty() && self.help.is_none() => {
                 self.help = Some(HelpArea);
-            }
-            KeyCode::Esc => {
-                if self.agent_running {
-                    return UserAction::CancelTask;
-                }
-                
-                // Handle escape key for input clearing
-                if let Some(escape_time) = self.escape_press_time {
-                    // Second escape within 1 second - clear input
-                    if escape_time.elapsed() < Duration::from_secs(1) {
-                        self.input = TextArea::default();
-                        self.escape_press_time = None;
-                        self.helper_msg = None;
-                        return UserAction::Nope;
-                    }
-                }
-                
-                // First escape or escape after timeout - show message
-                if !self.input.lines()[0].is_empty() {
-                    self.escape_press_time = Some(now);
-                    self.helper_set = Some(now);
-                    self.helper_duration = Some(Duration::from_secs(1));
-                    self.helper_msg = Some(" press esc again to clear".to_string());
-                }
-            }
-            KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SUPER) => {                
-                // Handle Ctrl+V or Cmd+V paste directly from clipboard
-                if let Ok(mut ctx) = ClipboardContext::new() {
-                    if let Ok(text) = ctx.get_contents() {
-                        self.input.insert_str(text);
-                        return UserAction::Nope;
-                    }
-                }
-                // Fallback: let TextArea handle it normally
-                let event: Input = Event::Key(key_event).into();
-                self.input.input(event);
-                return UserAction::Nope;
             }
             KeyCode::Enter => {
                 // Alt+Enter creates a new line immediately
@@ -451,44 +385,61 @@ impl InputArea<'_> {
                         kind: key_event.kind,
                         state: key_event.state,
                     };
-                    let event: Input = Event::Key(fake_event).into();
+                    let event: TextInput = Event::Key(fake_event).into();
                     self.input.input(event);
                     return UserAction::Nope;
                 }
 
-                // Tab to select current suggestion
-                if let Some(idx) = self.suggestion_index {
-                    if let Some(file_path) = self.file_suggestions.get(idx).cloned() {
+                // Tab to select current file suggestion
+                if self.file_suggestion.is_active() {
+                    if let Some(file_path) = self.file_suggestion.selected().map(|s| s.to_string())
+                    {
                         self.replace_file_search(&file_path);
                     }
                     return UserAction::Nope;
                 }
+
+                // Tab to select current command suggestion
+                if self.cmd_suggestion.is_active() {
+                    if let Some(cmd) = self.cmd_suggestion.selected().map(|s| s.to_string()) {
+                        self.input = TextArea::default();
+                        self.input.insert_str(&cmd);
+                        self.cmd_suggestion.clear();
+                    }
+                    return UserAction::Nope;
+                }
                 // Clear suggestions on Enter so message can be sent
-                self.file_suggestions.clear();
-                self.suggestion_index = None;
-                self.suggestion_search = None;
+                self.file_suggestion.clear();
+                self.cmd_suggestion.clear();
 
                 // Regular Enter - set pending and wait
                 self.pending_enter = Some(now);
                 return UserAction::Nope;
             }
             KeyCode::Up => {
-                // If we have suggestions, navigate through them
-                if !self.file_suggestions.is_empty() {
-                    if let Some(idx) = self.suggestion_index {
-                        self.suggestion_index = Some(if idx > 0 { idx - 1 } else { self.file_suggestions.len() - 1 });
-                    }
+                // If we have file suggestions, navigate through them
+                if self.file_suggestion.is_active() {
+                    self.file_suggestion.prev();
+                    return UserAction::Nope;
+                }
+                // If we have command suggestions, navigate through them
+                if self.cmd_suggestion.is_active() {
+                    self.cmd_suggestion.prev();
                     return UserAction::Nope;
                 }
 
                 // Get current cursor position
-                let (cursor_row, _) = self.input.cursor();
+                let cursor = self.input.cursor();
+                let cursor_row = cursor.0;
                 let is_empty = self.input.lines().iter().all(|line| line.is_empty());
 
                 // Navigate history only if:
                 // 1. Input is empty, OR
                 // 2. Cursor is at the first line
-                if !self.history.is_empty() && self.history_index > 0 && (is_empty || cursor_row == 0) {
+                if !self.history.is_empty()
+                    && self.history_index > 0
+                    && (is_empty || cursor_row == 0)
+                {
                     if self.history_index == self.history.len() && !is_empty {
                         let current_text = self.input.lines().join("\n");
                         self.current_draft = Some(current_text);
@@ -497,20 +448,24 @@ impl InputArea<'_> {
                     self.history_index -= 1;
                     self.load_historic_prompt(self.history_index);
                 } else if !is_empty && cursor_row > 0 {
-                    self.input.move_cursor(tui_textarea::CursorMove::Up);
+                    self.input.move_cursor(ratatui_textarea::CursorMove::Up);
                 }
             }
             KeyCode::Down => {
-                // If we have suggestions, navigate through them
-                if !self.file_suggestions.is_empty() {
-                    if let Some(idx) = self.suggestion_index {
-                        self.suggestion_index = Some((idx + 1) % self.file_suggestions.len());
-                    }
+                // If we have file suggestions, navigate through them
+                if self.file_suggestion.is_active() {
+                    self.file_suggestion.next();
+                    return UserAction::Nope;
+                }
+                // If we have command suggestions, navigate through them
+                if self.cmd_suggestion.is_active() {
+                    self.cmd_suggestion.next();
                     return UserAction::Nope;
                 }
 
                 // Get current cursor position
-                let (cursor_row, _) = self.input.cursor();
+                let cursor = self.input.cursor();
+                let cursor_row = cursor.0;
                 let is_empty = self.input.lines().iter().all(|line| line.is_empty());
                 let line_count = self.input.lines().len();
 
@@ -524,7 +479,8 @@ impl InputArea<'_> {
                         } else {
                             // Restore draft or create empty input
                             if let Some(draft) = self.current_draft.take() {
-                                self.input = TextArea::new(draft.lines().map(|s| s.to_string()).collect());
+                                self.input =
+                                    TextArea::new(draft.lines().map(|s| s.to_string()).collect());
                                 self.move_cursor_to_end_of_text();
                             } else {
                                 self.input = TextArea::default();
@@ -532,174 +488,123 @@ impl InputArea<'_> {
                         }
                     }
                 } else if !is_empty && cursor_row < line_count - 1 {
-                    self.input.move_cursor(tui_textarea::CursorMove::Down);
+                    self.input.move_cursor(ratatui_textarea::CursorMove::Down);
                 }
             }
             _ => {
                 // Convert to ratatui event format for tui-textarea
                 self.help = None;
-                let event: Event = Event::Key(KeyEvent::from(key_event));
-                let input: Input = event.into();
+                let event: Event = Event::Key(key_event);
+                let input: TextInput = event.into();
                 self.input.input(input);
             }
         }
 
         // Update suggestions after each keystroke
-        self.update_suggestions();
+        self.file_suggestion.update(&self.input);
+        let current_text = self.input.lines().join("\n");
+        self.cmd_suggestion.update(&current_text);
 
         UserAction::Nope
     }
-
-    // Replace @search with the file path
-    fn replace_file_search(&mut self, file_path: &str) {
-        if let Some((at_pos, search_text)) = self.detect_file_search() {
-            let (row, _) = self.input.cursor();
-
-            // Calculate how many characters to delete (@ + search text)
-            let chars_to_delete = 1 + search_text.len(); // @ + text after
-
-            // Move cursor to @ position
-            self.input.move_cursor(tui_textarea::CursorMove::Head);
-            for _ in 0..at_pos {
-                self.input.move_cursor(tui_textarea::CursorMove::Forward);
-            }
-
-            // Delete @ + search text
-            for _ in 0..chars_to_delete {
-                self.input.delete_next_char();
-            }
-
-            // Insert file path
-            self.input.insert_str(file_path);
-
-            // Reset suggestions
-            self.file_suggestions.clear();
-            self.suggestion_index = None;
-            self.suggestion_search = None;
-        }
-    }
 }
-
 
 /// drawing logic
 impl InputArea<'_> {
     pub fn height(&self) -> u16 {
-        // +2 for top/bottom borders
-        // +N for lines inside input
-        // +1 for helper text below input
-        let suggestions_height = if !self.file_suggestions.is_empty() {
-            self.file_suggestions.len().min(5) as u16 + 2
-        } else {
-            0
-        };
-        self.input.lines().len().max(1) as u16 + 4 + self.help.as_ref().map_or(0, |h| h.height()) + suggestions_height
+        self.input.lines().len().max(1) as u16
+            + 4
+            + self.help.as_ref().map_or(0, |h| h.height())
+            + self.file_suggestion.height()
+            + self.cmd_suggestion.height()
     }
 
     pub fn draw(&mut self, f: &mut Frame, area: Rect) {
-        let suggestions_height = if !self.file_suggestions.is_empty() {
-            self.file_suggestions.len().min(5) as u16 + 2
-        } else {
-            0
-        };
+        let suggestions_height = self.file_suggestion.height();
+        let cmd_suggestions_height = self.cmd_suggestion.height();
 
-        let [status, input_area, suggestions_area, helper, help_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(self.height() - 2 - suggestions_height),
-            Constraint::Length(suggestions_height),
-            Constraint::Length(1),
-            Constraint::Length(self.help.as_ref().map_or(0, |h| h.height()))
-        ]).areas(area);
-        
+        let [status, input_area, cmd_suggestions_area, file_suggestions_area, helper, help_area] =
+            Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(self.input.lines().len().max(1) as u16 + 2),
+                Constraint::Length(cmd_suggestions_height),
+                Constraint::Length(suggestions_height),
+                Constraint::Length(1),
+                Constraint::Length(self.help.as_ref().map_or(0, |h| h.height())),
+            ])
+            .areas(area);
+
         // status
-        f.render_widget(Span::styled(self.get_status_text(), Style::default().fg(self.palette.status)), status);
+        f.render_widget(
+            Span::styled(
+                self.get_status_text(),
+                Style::default().fg(self.palette.status),
+            ),
+            status,
+        );
 
         // Input - clone and apply block styling
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .padding(Padding { left: 1, right: 1, top: 0, bottom: 0 })
+            .padding(Padding {
+                left: 1,
+                right: 1,
+                top: 0,
+                bottom: 0,
+            })
             .border_style(Style::default().fg(self.palette.border));
         let inner = block.inner(input_area);
         f.render_widget(block, input_area);
 
-        let [pad, prompt] = Layout::horizontal([Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
-        f.render_widget(format!(">"), pad);
+        let [pad, prompt] =
+            Layout::horizontal([Constraint::Length(2), Constraint::Fill(1)]).areas(inner);
+        f.render_widget(">".to_string(), pad);
 
         // Set placeholder and block
-        self.input.set_placeholder_text("? for help");
-        self.input.set_placeholder_style(Style::default().fg(self.palette.placeholder));
-        self.input.set_style(Style::default().fg(self.palette.input_text));
-        self.input.set_cursor_style(Style::default()
-            .fg(self.palette.cursor_fg)
-            .bg(if !self.input.lines()[0].is_empty() { self.palette.cursor_bg } else { Color::Reset }));
+        self.input.set_placeholder_text(&self.placeholder);
+        self.input
+            .set_placeholder_style(Style::default().fg(self.palette.placeholder));
+        self.input
+            .set_style(Style::default().fg(self.palette.input_text));
+        self.input
+            .set_cursor_style(Style::default().fg(self.palette.cursor_fg).bg(
+                if !self.input.lines()[0].is_empty() {
+                    self.palette.cursor_bg
+                } else {
+                    Color::Reset
+                },
+            ));
         self.input.set_cursor_line_style(Style::default());
         f.render_widget(&self.input, prompt);
-        
-        // Helper text area below input
-        let [helper_left, _, helper_right] = Layout::horizontal([
-            Constraint::Fill(1), 
-            Constraint::Fill(1), 
-            Constraint::Length(self.method_str().len() as u16)
-        ]).areas(helper);
 
+        // Helper text area below input
+        let [helper_left, _] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(0)]).areas(helper);
+
+        // Multi-line indicator
+        let line_count = self.input.lines().len();
         let helper_text = self.check_helper_msg();
+        let multi_line_indicator = if line_count > 1 {
+            format!("{} [{} lines]", helper_text, line_count)
+        } else {
+            helper_text
+        };
         f.render_widget(
-            Span::styled(helper_text, Style::default().fg(self.palette.method_label).dim()), 
-            helper_left
+            Span::styled(
+                multi_line_indicator,
+                Style::default().fg(self.palette.input_text),
+            ),
+            helper_left,
         );
-                
-        // Status
-        f.render_widget(
-            Span::styled(self.method_str(), Style::default().fg(self.palette.method_label)), 
-            helper_right
-        );
+
+        // Command suggestions
+        self.cmd_suggestion
+            .draw(f, cmd_suggestions_area, &self.palette);
 
         // File suggestions
-        if !self.file_suggestions.is_empty() {
-            let max_visible = 5;
-            let total = self.file_suggestions.len();
-            let selected = self.suggestion_index.unwrap_or(0);
-            
-            // Calculate scrolling window
-            let start = if total <= max_visible {
-                0
-            } else {
-                // Center the selected item in the window when possible
-                let ideal_start = selected.saturating_sub(max_visible / 2);
-                ideal_start.min(total.saturating_sub(max_visible))
-            };
-            
-            let end = (start + max_visible).min(total);
-            
-            let items: Vec<ListItem> = self.file_suggestions[start..end]
-                .iter()
-                .enumerate()
-                .map(|(window_idx, path)| {
-                    let actual_idx = start + window_idx;
-                    let style = if Some(actual_idx) == self.suggestion_index {
-                        Style::default().fg(self.palette.suggestion_selected_fg).bg(self.palette.suggestion_selected_bg)
-                    } else {
-                        Style::default().fg(self.palette.suggestion_normal)
-                    };
-                    ListItem::new(path.as_str()).style(style)
-                })
-                .collect();
-
-            let title = if total > max_visible {
-                format!("Files ({}/{})", selected + 1, total)
-            } else {
-                "Files".to_string()
-            };
-
-            let suggestions_list = List::new(items)
-                .block(Block::default()
-                    .borders(Borders::ALL)
-                    .border_set(border::ROUNDED)
-                    .border_style(Style::default().fg(self.palette.border))
-                    .title(title));
-
-            f.render_widget(suggestions_list, suggestions_area);
-        }
+        self.file_suggestion
+            .draw(f, file_suggestions_area, &self.palette);
 
         // help
         if let Some(help) = &self.help {

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FindToolParams {
@@ -43,9 +43,15 @@ pub enum FindType {
     Both,
 }
 
-fn default_max_results() -> u32 { 100 }
-fn default_find_type() -> FindType { FindType::Content }
-fn default_show_line_numbers() -> bool { true }
+fn default_max_results() -> u32 {
+    100
+}
+fn default_find_type() -> FindType {
+    FindType::Content
+}
+fn default_show_line_numbers() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -54,5 +60,5 @@ pub struct SearchResult {
     pub line_content: Option<String>,
     pub context_before: Vec<String>,
     pub context_after: Vec<String>,
-    pub match_type: String,  // "content" or "filename"
+    pub match_type: String, // "content" or "filename"
 }

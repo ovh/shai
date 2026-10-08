@@ -87,21 +87,21 @@ pub fn searcher_next_step() -> String {
     let today = get_today();
     let git_repo = is_git_repo();
     let mut prompt = SEARCHER_PROMPT
-    .replace("{working_dir}", &working_dir)
-    .replace("{is_git_repo}", &git_repo.to_string())
-    .replace("{platform}", &platform)
-    .replace("{os_version}", &os)
-    .replace("{today}", &today)
-    .to_string();
+        .replace("{working_dir}", &working_dir)
+        .replace("{is_git_repo}", &git_repo.to_string())
+        .replace("{platform}", &platform)
+        .replace("{os_version}", &os)
+        .replace("{today}", &today)
+        .to_string();
 
     if git_repo {
         let git_branch = get_git_branch();
         let git_log = get_git_log();
         let git_status = get_git_status();
         let git_info = SEARCHER_PROMPT_GIT
-        .replace("{git_branch}", &git_branch)
-        .replace("{git_status}", &git_status)
-        .replace("{git_log}", &git_log);
+            .replace("{git_branch}", &git_branch)
+            .replace("{git_status}", &git_status)
+            .replace("{git_log}", &git_log);
         prompt += &git_info;
     }
 

@@ -17,11 +17,7 @@ pub trait EventFormatter: Send {
 
     /// Convert an AgentEvent to API-specific format
     /// Returns None if the event should be filtered out
-    async fn format_event(
-        &mut self,
-        event: AgentEvent,
-        session_id: &str,
-    ) -> Option<Self::Output>;
+    async fn format_event(&mut self, event: AgentEvent, session_id: &str) -> Option<Self::Output>;
 
     /// Get the SSE event name for this output
     /// Default is "message"
@@ -64,7 +60,10 @@ where
                                 match serde_json::to_string(&output) {
                                     Ok(json) => {
                                         let sse_event = Event::default().data(json);
-                                        return Some((Ok(sse_event), (rx, fmt, new_done, lifecycle)));
+                                        return Some((
+                                            Ok(sse_event),
+                                            (rx, fmt, new_done, lifecycle),
+                                        ));
                                     }
                                     Err(e) => {
                                         error!("[{}] Failed to serialize event: {}", session_id, e);
@@ -127,7 +126,13 @@ where
     let _controller = request_session.controller;
     let lifecycle = request_session.lifecycle;
 
-    sse_stream_internal(event_rx, formatter, session_id, Some(lifecycle), stop_on_pause)
+    sse_stream_internal(
+        event_rx,
+        formatter,
+        session_id,
+        Some(lifecycle),
+        stop_on_pause,
+    )
 }
 
 /// Check if an event signals the end of the stream

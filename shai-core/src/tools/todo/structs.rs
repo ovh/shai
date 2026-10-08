@@ -1,15 +1,21 @@
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 pub struct TodoStorage {
-    store: RwLock<Vec<TodoItem>>
+    store: RwLock<Vec<TodoItem>>,
+}
+
+impl Default for TodoStorage {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TodoStorage {
     pub fn new() -> Self {
         Self {
-            store: RwLock::new(Vec::new())
+            store: RwLock::new(Vec::new()),
         }
     }
 
@@ -21,7 +27,6 @@ impl TodoStorage {
         *self.store.write().await = items;
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TodoItem {
@@ -48,7 +53,7 @@ impl TodoItem {
             TodoStatus::InProgress => ("☐", "\x1b[1;34m"),
             TodoStatus::Completed => ("☑", "\x1b[32m"),
         };
-        
+
         format!("{}{} {}\x1b[0m", color_code, checkbox, self.content)
     }
 }
@@ -58,7 +63,8 @@ impl TodoStorage {
         if todos.is_empty() {
             "No todos found. The todo list is empty.".to_string()
         } else {
-            todos.iter()
+            todos
+                .iter()
                 .map(|todo| todo.format_for_display())
                 .collect::<Vec<_>>()
                 .join("\n")

@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use schemars::JsonSchema;
+use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]

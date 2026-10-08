@@ -3,9 +3,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{
-    parse_macro_input, FnArg, ItemImpl, PatType,
-};
+use syn::{parse_macro_input, FnArg, ItemImpl, PatType};
 
 #[proc_macro_attribute]
 pub fn tool(args: TokenStream, input: TokenStream) -> TokenStream {
@@ -24,7 +22,7 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
 
     // Robust parsing for name = "..." and description = "..."
     let args_clean = args.trim();
-    
+
     // Handle complex descriptions with commas by finding name and description sections
     if let Some(name_start) = args_clean.find("name") {
         if let Some(name_eq) = args_clean[name_start..].find('=') {
@@ -35,7 +33,7 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
             }
         }
     }
-    
+
     if let Some(desc_start) = args_clean.find("description") {
         if let Some(desc_eq) = args_clean[desc_start..].find('=') {
             let after_eq = &args_clean[desc_start + desc_eq + 1..].trim();
@@ -58,10 +56,9 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
         }
     }
 
-    let name = name.ok_or_else(|| {
-        syn::Error::new_spanned(&input, "Missing required 'name' attribute")
-    })?;
-    
+    let name =
+        name.ok_or_else(|| syn::Error::new_spanned(&input, "Missing required 'name' attribute"))?;
+
     let description = description.ok_or_else(|| {
         syn::Error::new_spanned(&input, "Missing required 'description' attribute")
     })?;
@@ -88,7 +85,7 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
         if let syn::ImplItem::Fn(method) = item {
             if method.sig.ident == "execute" {
                 execute_method = Some(method);
-                
+
                 // Extract parameter type by position: &self, params, [optional cancel_token]
                 let mut param_index = 0;
                 for input in &method.sig.inputs {
@@ -115,9 +112,8 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
         }
     }
 
-    let execute_method = execute_method.ok_or_else(|| {
-        syn::Error::new_spanned(&input, "Expected an 'execute' method")
-    })?;
+    let execute_method = execute_method
+        .ok_or_else(|| syn::Error::new_spanned(&input, "Expected an 'execute' method"))?;
 
     let param_type = param_type.ok_or_else(|| {
         syn::Error::new_spanned(
@@ -130,25 +126,33 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
     let capabilities_tokens = if capabilities.is_empty() {
         quote! { &[] }
     } else {
-        let perms: Vec<&str> = capabilities.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-        let perm_variants: Vec<_> = perms.iter().map(|p| {
-            let p_clean = p.trim();
-            match p_clean {
-                "Read" => quote! { #crate_name::tools::ToolCapability::Read },
-                "Write" => quote! { #crate_name::tools::ToolCapability::Write },
-                "Network" => quote! { #crate_name::tools::ToolCapability::Network },
-                "ToolCapability::Read" => quote! { #crate_name::tools::ToolCapability::Read },
-                "ToolCapability::Write" => quote! { #crate_name::tools::ToolCapability::Write },
-                "ToolCapability::Network" => quote! { #crate_name::tools::ToolCapability::Network },
-                _ => {
-                    // Default fallback, but emit warning in generated code
-                    quote! { #crate_name::tools::ToolCapability::Read }
+        let perms: Vec<&str> = capabilities
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let perm_variants: Vec<_> = perms
+            .iter()
+            .map(|p| {
+                let p_clean = p.trim();
+                match p_clean {
+                    "Read" => quote! { #crate_name::tools::ToolCapability::Read },
+                    "Write" => quote! { #crate_name::tools::ToolCapability::Write },
+                    "Network" => quote! { #crate_name::tools::ToolCapability::Network },
+                    "ToolCapability::Read" => quote! { #crate_name::tools::ToolCapability::Read },
+                    "ToolCapability::Write" => quote! { #crate_name::tools::ToolCapability::Write },
+                    "ToolCapability::Network" => {
+                        quote! { #crate_name::tools::ToolCapability::Network }
+                    }
+                    _ => {
+                        // Default fallback, but emit warning in generated code
+                        quote! { #crate_name::tools::ToolCapability::Read }
+                    }
                 }
-            }
-        }).collect();
+            })
+            .collect();
         quote! { &[#(#perm_variants),*] }
     };
-
 
     // Generate execute_preview method if user provided one
     let execute_preview_impl = if execute_preview_method.is_some() {
@@ -178,7 +182,7 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
 
     let expanded = quote! {
         #input
-        
+
         // Implement ToolDescription trait from shai-llm
         impl shai_llm::ToolDescription for #self_ty {
             fn name(&self) -> String {
@@ -197,7 +201,7 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
                 use schemars::schema_for;
                 let schema = schema_for!(#param_type);
                 let mut schema_value = serde_json::to_value(schema).unwrap_or_default();
-                
+
                 // Transform schema for better OpenAI API compatibility
                 // Convert "type": ["integer", "null"] to "type": "integer" and handle required fields
                 fn fix_schema(schema: &mut serde_json::Value) {
@@ -205,11 +209,11 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
                         // Remove JSON Schema metadata fields that LLM APIs don't expect
                         obj.remove("$schema");
                         obj.remove("title");
-                        
+
                         // Handle properties object
                         if let Some(serde_json::Value::Object(properties)) = obj.get_mut("properties") {
                             let mut required_fields = Vec::new();
-                            
+
                             for (field_name, field_schema) in properties.iter_mut() {
                                 if let serde_json::Value::Object(field_obj) = field_schema {
                                     // Check if this field has union type with null
@@ -217,7 +221,7 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
                                         if types.len() == 2 {
                                             let has_null = types.iter().any(|t| t == "null");
                                             let non_null_type = types.iter().find(|t| *t != "null");
-                                            
+
                                             if has_null && non_null_type.is_some() {
                                                 // Replace union type with single type
                                                 field_obj.insert("type".to_string(), non_null_type.unwrap().clone());
@@ -234,18 +238,18 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
                                         // Single type, field is required
                                         required_fields.push(serde_json::Value::String(field_name.clone()));
                                     }
-                                    
+
                                     // Recursively handle nested objects
                                     fix_schema(field_schema);
                                 }
                             }
-                            
+
                             // Set required fields (only non-optional ones)
                             if !required_fields.is_empty() {
                                 obj.insert("required".to_string(), serde_json::Value::Array(required_fields));
                             }
                         }
-                        
+
                         // Recursively handle other nested objects
                         for (_, value) in obj.iter_mut() {
                             if let serde_json::Value::Object(_) = value {
@@ -254,7 +258,7 @@ fn tool_impl(args: String, input: ItemImpl) -> syn::Result<TokenStream2> {
                         }
                     }
                 }
-                
+
                 fix_schema(&mut schema_value);
                 schema_value
             }

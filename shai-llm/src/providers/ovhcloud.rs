@@ -1,15 +1,15 @@
 // llm/providers/ovhcloud.rs
-use crate::provider::{LlmProvider, LlmError, LlmStream, ProviderInfo, EnvVar};
+use crate::provider::{EnvVar, LlmError, LlmProvider, LlmStream, ProviderInfo};
 use async_trait::async_trait;
 use futures::StreamExt;
 use openai_dive::v1::{
     api::Client,
+    error::APIError,
     resources::{
-        chat::{ChatCompletionParameters, ChatCompletionResponse, ChatCompletionChunkResponse},
+        chat::{ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse},
         model::ListModelResponse,
         shared::Usage,
     },
-    error::APIError
 };
 use serde_json::Value;
 
@@ -55,32 +55,46 @@ impl LlmProvider for OvhCloudProvider {
 
     async fn default_model(&self) -> Result<String, LlmError> {
         let models = self.models().await?; // Get the models
-    
-        models.data.iter()
+
+        models
+            .data
+            .iter()
             .find(|m| m.id.to_lowercase().contains("nemo"))
             .or_else(|| models.data.first())
             .map(|m| m.id.clone())
             .ok_or_else(|| "no model available".into())
     }
 
-    async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {
+    async fn chat(
+        &self,
+        request: ChatCompletionParameters,
+    ) -> Result<ChatCompletionResponse, LlmError> {
         let sanitized_request = self.sanitize_request(request);
-        let mut response = self.client.chat().create(sanitized_request).await
+        let mut response = self
+            .client
+            .chat()
+            .create(sanitized_request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
 
         Ok(response)
     }
 
-    async fn chat_stream(&self, mut request: ChatCompletionParameters) -> Result<LlmStream, LlmError> {
+    async fn chat_stream(
+        &self,
+        mut request: ChatCompletionParameters,
+    ) -> Result<LlmStream, LlmError> {
         request.stream = Some(true);
         let sanitized_request = self.sanitize_request(request);
-        
-        let stream = self.client.chat().create_stream(sanitized_request).await
+
+        let stream = self
+            .client
+            .chat()
+            .create_stream(sanitized_request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
 
-        let converted_stream = stream.map(|result| {
-            result.map_err(|e| Box::new(e) as LlmError)
-        });
+        let converted_stream = stream.map(|result| result.map_err(|e| Box::new(e) as LlmError));
 
         Ok(Box::new(Box::pin(converted_stream)))
     }
@@ -96,17 +110,18 @@ impl LlmProvider for OvhCloudProvider {
     fn name(&self) -> &'static str {
         "ovhcloud"
     }
-    
+
     fn info() -> ProviderInfo {
         ProviderInfo {
             name: "ovhcloud",
             display_name: "OVHcloud AI Endpoints",
             env_vars: vec![
                 EnvVar::required("OVH_API_KEY", "OVHcloud API key"),
-                EnvVar::optional("OVH_BASE_URL", "OVHcloud base URL (defaults to standard endpoint)"),
+                EnvVar::optional(
+                    "OVH_BASE_URL",
+                    "OVHcloud base URL (defaults to standard endpoint)",
+                ),
             ],
         }
     }
-    
 }
-

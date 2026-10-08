@@ -1,8 +1,8 @@
-pub mod structs;
 pub mod fetch;
+pub mod structs;
 
 #[cfg(test)]
 mod tests;
 
-pub use structs::{FetchToolParams, HttpMethod};
 pub use fetch::FetchTool;
+pub use structs::{FetchToolParams, HttpMethod};

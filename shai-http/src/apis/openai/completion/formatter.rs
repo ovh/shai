@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use openai_dive::v1::resources::chat::{
-    ChatCompletionChunkResponse, ChatCompletionChunkChoice, DeltaChatMessage,
-    ChatMessageContent, ChatMessage,
+    ChatCompletionChunkChoice, ChatCompletionChunkResponse, ChatMessage, ChatMessageContent,
+    DeltaChatMessage,
 };
 use openai_dive::v1::resources::shared::FinishReason;
 use shai_core::agent::AgentEvent;
@@ -31,7 +31,11 @@ impl ChatCompletionFormatter {
         }
     }
 
-    fn create_chunk(&self, delta: DeltaChatMessage, finish_reason: Option<FinishReason>) -> ChatCompletionChunkResponse {
+    fn create_chunk(
+        &self,
+        delta: DeltaChatMessage,
+        finish_reason: Option<FinishReason>,
+    ) -> ChatCompletionChunkResponse {
         ChatCompletionChunkResponse {
             id: Some(format!("chatcmpl-{}", Uuid::new_v4())),
             object: "chat.completion.chunk".to_string(),
@@ -53,11 +57,7 @@ impl ChatCompletionFormatter {
 impl EventFormatter for ChatCompletionFormatter {
     type Output = ChatCompletionChunkResponse;
 
-    async fn format_event(
-        &mut self,
-        event: AgentEvent,
-        _session_id: &str,
-    ) -> Option<Self::Output> {
+    async fn format_event(&mut self, event: AgentEvent, _session_id: &str) -> Option<Self::Output> {
         match event {
             // Capture assistant messages from brain results
             AgentEvent::BrainResult { thought, .. } => {

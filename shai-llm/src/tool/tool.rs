@@ -1,29 +1,28 @@
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ToolCallMethod {
     /// let the system decide what technique to use
-    Auto,               
+    Auto,
     /// use function call api with tool choice set to auto
-    FunctionCall,       
+    FunctionCall,
     /// use function call api with tool choice set to required (gave special tool for "no tool")
-    FunctionCallRequired,       
+    FunctionCallRequired,
     /// use response_format to force structured output, add tool documentation in system prompt
-    StructuredOutput, 
+    StructuredOutput,
     /// instruct llm to use special tag and parse the response from content, add tool documentation in system prompt
-    Parsing,            
+    Parsing,
 }
 
 /// A tool must be able to describe its parameter as a json schema
 pub trait ToolDescription: Send + Sync {
-
     fn name(&self) -> String;
 
     fn description(&self) -> String;
 
     fn parameters_schema(&self) -> serde_json::Value;
-    
+
     /// Return the group name for this tool (e.g., "builtin", "mcp_ovh")
     fn group(&self) -> Option<&str> {
         None

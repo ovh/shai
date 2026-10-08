@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 // Anthropic-specific streaming event types
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,22 +1,19 @@
-use std::path::PathBuf;
-use openai_dive::v1::resources::chat::ChatCompletionParameters;
 use crate::provider::LlmError;
+use openai_dive::v1::resources::chat::ChatCompletionParameters;
+use std::path::PathBuf;
+use tracing::{debug, warn};
 
 /// Log a failed LLM request to a file for debugging
 ///
 /// Configuration via environment variables:
 /// - `SHAI_LLM_ERR_LOGGING_ENABLED`: Set to "true" to enable error logging (default: false)
 /// - `SHAI_LLM_ERR_FOLDER`: Directory for error logs (default: `.shai/llm/errors/`)
-pub fn log_llm_error(
-    request: &ChatCompletionParameters,
-    error: &LlmError,
-    provider_name: &str,
-) {
+pub fn log_llm_error(request: &ChatCompletionParameters, error: &LlmError, provider_name: &str) {
     // Check if error logging is enabled
     let enabled = std::env::var("SHAI_LLM_LOGGING_ENABLED")
         .map(|v| v.to_lowercase() == "true")
         .unwrap_or(false);
-    
+
     if !enabled {
         return;
     }
@@ -28,7 +25,7 @@ pub fn log_llm_error(
 
     // Create directory if it doesn't exist
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
-        eprintln!("Failed to create error log directory: {}", e);
+        warn!(target: "shai_llm::logging", "Failed to create error log directory: {}", e);
         return;
     }
 
@@ -56,7 +53,7 @@ pub fn log_llm_error(
         Ok(json) => log_content.push_str(&json),
         Err(e) => log_content.push_str(&format!("Failed to serialize request: {}", e)),
     }
-    log_content.push_str("\n");
+    log_content.push('\n');
 
     // Error section
     log_content.push_str("\n=== ERROR ===\n");
@@ -64,8 +61,8 @@ pub fn log_llm_error(
 
     // Write to file
     if let Err(e) = std::fs::write(&log_path, log_content) {
-        eprintln!("Failed to write error log to {}: {}", log_path.display(), e);
+        warn!(target: "shai_llm::logging", "Failed to write error log to {}: {}", log_path.display(), e);
     } else {
-        eprintln!("LLM error logged to: {}", log_path.display());
+        debug!(target: "shai_llm::logging", "LLM error logged to: {}", log_path.display());
     }
 }

@@ -1,19 +1,18 @@
-use shai_core::agent::{AgentController, AgentError, AgentEvent};
+use crate::session::logger::colored_session_id;
 use openai_dive::v1::resources::chat::ChatMessage;
+use shai_core::agent::{AgentController, AgentError, AgentEvent};
 use std::sync::Arc;
 use tokio::sync::{broadcast::Receiver, Mutex};
 use tokio::task::JoinHandle;
 use tracing::info;
-use crate::session::logger::colored_session_id;
 
 use super::RequestLifecycle;
-
 
 /// Represents a single HTTP request session with automatic lifecycle management
 pub struct RequestSession {
     pub controller: AgentController,
     pub event_rx: Receiver<AgentEvent>,
-    pub lifecycle: RequestLifecycle
+    pub lifecycle: RequestLifecycle,
 }
 
 /// A single agent session - represents one running agent instance
@@ -51,14 +50,18 @@ impl AgentSession {
             agent_task,
             session_id,
             agent_name: agent_name_display,
-            ephemeral: ephemeral,
+            ephemeral,
         }
     }
 
     /// Terminate a session
-    pub async fn cancel(&self, http_request_id: &String)  -> Result<(), AgentError> {
+    pub async fn cancel(&self, http_request_id: &String) -> Result<(), AgentError> {
         let ctrl = self.controller.clone().lock_owned().await;
-        info!("[{}] - {} cancelling session", http_request_id, colored_session_id(&self.session_id));
+        info!(
+            "[{}] - {} cancelling session",
+            http_request_id,
+            colored_session_id(&self.session_id)
+        );
         ctrl.terminate().await
     }
 
@@ -70,18 +73,35 @@ impl AgentSession {
 
     /// Handle a request for this agent session
     /// Returns a RequestSession that manages the lifecycle
-    pub async fn handle_request(&self, http_request_id: &String, trace: Vec<ChatMessage>) -> Result<RequestSession, AgentError> {
+    pub async fn handle_request(
+        &self,
+        http_request_id: &String,
+        trace: Vec<ChatMessage>,
+    ) -> Result<RequestSession, AgentError> {
         let controller_guard = self.controller.clone().lock_owned().await;
         controller_guard.wait_turn(None).await?;
-        info!("[{}] - {} handling request", http_request_id, colored_session_id(&self.session_id));
+        info!(
+            "[{}] - {} handling request",
+            http_request_id,
+            colored_session_id(&self.session_id)
+        );
 
         controller_guard.send_trace(trace).await?;
 
         let event_rx = self.event_rx.resubscribe();
         let controller = controller_guard.clone();
-        let lifecycle = RequestLifecycle::new(self.ephemeral, controller_guard, http_request_id.clone(), self.session_id.clone());
+        let lifecycle = RequestLifecycle::new(
+            self.ephemeral,
+            controller_guard,
+            http_request_id.clone(),
+            self.session_id.clone(),
+        );
 
-        Ok(RequestSession{controller, event_rx, lifecycle})
+        Ok(RequestSession {
+            controller,
+            event_rx,
+            lifecycle,
+        })
     }
 
     pub fn is_ephemeral(&self) -> bool {

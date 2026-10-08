@@ -1,14 +1,18 @@
-use crate::provider::{LlmProvider, LlmError, LlmStream, ProviderInfo, EnvVar};
 use super::api::*;
+use crate::provider::{EnvVar, LlmError, LlmProvider, LlmStream, ProviderInfo};
 use async_trait::async_trait;
-use reqwest::Client;
-use serde_json::json;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use openai_dive::v1::resources::{
-    chat::{ChatCompletionParameters, ChatCompletionResponse, ChatCompletionChunkResponse, ChatMessage, DeltaChatMessage, ChatMessageContent, ChatCompletionChoice, ChatCompletionChunkChoice, ToolCall, Function},
+    chat::{
+        ChatCompletionChoice, ChatCompletionChunkChoice, ChatCompletionChunkResponse,
+        ChatCompletionParameters, ChatCompletionResponse, ChatMessage, ChatMessageContent,
+        DeltaChatMessage, Function, ToolCall,
+    },
     model::ListModelResponse,
     shared::{FinishReason, Usage},
 };
+use reqwest::Client;
+use serde_json::json;
 
 pub struct AnthropicProvider {
     api_key: String,
@@ -26,25 +30,21 @@ impl AnthropicProvider {
     /// Create Anthropic provider from environment variables
     /// Returns None if required environment variables are not set
     pub fn from_env() -> Option<Self> {
-        std::env::var("ANTHROPIC_API_KEY").ok().map(|api_key| {
-            Self::new(api_key)
-        })
+        std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .map(|api_key| Self::new(api_key))
     }
 
-    async fn parse_anthropic_stream(
-        response: reqwest::Response,
-    ) -> Result<LlmStream, LlmError> {
+    async fn parse_anthropic_stream(response: reqwest::Response) -> Result<LlmStream, LlmError> {
         let stream = response.bytes_stream();
-        
+
         let parsed_stream = stream
-            .map(|chunk_result| {
-                match chunk_result {
-                    Ok(chunk) => {
-                        let chunk_str = String::from_utf8_lossy(&chunk);
-                        Self::parse_sse_chunk(&chunk_str)
-                    }
-                    Err(e) => vec![Err(Box::new(e) as LlmError)],
+            .map(|chunk_result| match chunk_result {
+                Ok(chunk) => {
+                    let chunk_str = String::from_utf8_lossy(&chunk);
+                    Self::parse_sse_chunk(&chunk_str)
                 }
+                Err(e) => vec![Err(Box::new(e) as LlmError)],
             })
             .flat_map(|results| stream::iter(results));
 
@@ -55,10 +55,10 @@ impl AnthropicProvider {
         let mut results = Vec::new();
         let mut current_event_type: Option<String> = None;
         let mut current_data = String::new();
-        
+
         for line in chunk.lines() {
             let line = line.trim();
-            
+
             if line.starts_with("event: ") {
                 current_event_type = Some(line[7..].to_string());
             } else if line.starts_with("data: ") {
@@ -68,18 +68,21 @@ impl AnthropicProvider {
                 if let Some(event_type) = current_event_type.take() {
                     match Self::process_anthropic_event(&event_type, &current_data) {
                         Ok(Some(response)) => results.push(Ok(response)),
-                        Ok(None) => {}, // Non-content events like ping
+                        Ok(None) => {} // Non-content events like ping
                         Err(e) => results.push(Err(e)),
                     }
                     current_data.clear();
                 }
             }
         }
-        
+
         results
     }
 
-    fn process_anthropic_event(event_type: &str, data: &str) -> Result<Option<ChatCompletionChunkResponse>, LlmError> {
+    fn process_anthropic_event(
+        event_type: &str,
+        data: &str,
+    ) -> Result<Option<ChatCompletionChunkResponse>, LlmError> {
         match serde_json::from_str::<AnthropicStreamEvent>(data) {
             Ok(event) => Self::convert_anthropic_event_to_stream_response(event),
             Err(e) => {
@@ -89,20 +92,27 @@ impl AnthropicProvider {
                 } else {
                     Err(Box::new(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
-                        format!("Failed to parse Anthropic event {}: {}. Error: {}", event_type, data, e)
+                        format!(
+                            "Failed to parse Anthropic event {}: {}. Error: {}",
+                            event_type, data, e
+                        ),
                     )) as LlmError)
                 }
             }
         }
     }
 
-    fn convert_anthropic_event_to_stream_response(event: AnthropicStreamEvent) -> Result<Option<ChatCompletionChunkResponse>, LlmError> {
+    fn convert_anthropic_event_to_stream_response(
+        event: AnthropicStreamEvent,
+    ) -> Result<Option<ChatCompletionChunkResponse>, LlmError> {
         match event {
             AnthropicStreamEvent::ContentBlockDelta { delta, .. } => {
                 let content = match delta {
                     AnthropicDelta::TextDelta { text } => Some(ChatMessageContent::Text(text)),
                     AnthropicDelta::ThinkingDelta { thinking: _ } => return Ok(None), // Skip thinking content
-                    AnthropicDelta::InputJsonDelta { partial_json } => Some(ChatMessageContent::Text(partial_json)),
+                    AnthropicDelta::InputJsonDelta { partial_json } => {
+                        Some(ChatMessageContent::Text(partial_json))
+                    }
                 };
 
                 Ok(Some(ChatCompletionChunkResponse {
@@ -158,37 +168,38 @@ impl AnthropicProvider {
                     system_fingerprint: None,
                 }))
             }
-            AnthropicStreamEvent::MessageStop => {
-                Ok(Some(ChatCompletionChunkResponse {
-                    id: Some(format!("anthropic-{}", uuid::Uuid::new_v4())),
-                    object: "chat.completion.chunk".to_string(),
-                    created: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as u32,
-                    model: "claude".to_string(),
-                    choices: vec![ChatCompletionChunkChoice {
-                        index: Some(0),
-                        delta: DeltaChatMessage::Assistant {
-                            content: None,
-                            reasoning: None,
-                            reasoning_content: None,
-                            refusal: None,
-                            name: None,
-                            tool_calls: None,
-                        },
-                        finish_reason: Some(FinishReason::StopSequenceReached),
-                        logprobs: None,
-                    }],
-                    usage: None,
-                    system_fingerprint: None,
-                }))
-            }
+            AnthropicStreamEvent::MessageStop => Ok(Some(ChatCompletionChunkResponse {
+                id: Some(format!("anthropic-{}", uuid::Uuid::new_v4())),
+                object: "chat.completion.chunk".to_string(),
+                created: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as u32,
+                model: "claude".to_string(),
+                choices: vec![ChatCompletionChunkChoice {
+                    index: Some(0),
+                    delta: DeltaChatMessage::Assistant {
+                        content: None,
+                        reasoning: None,
+                        reasoning_content: None,
+                        refusal: None,
+                        name: None,
+                        tool_calls: None,
+                    },
+                    finish_reason: Some(FinishReason::StopSequenceReached),
+                    logprobs: None,
+                }],
+                usage: None,
+                system_fingerprint: None,
+            })),
             _ => Ok(None), // Skip other events like message_start, content_block_start, ping, etc.
         }
     }
 
-    pub(crate) fn convert_to_anthropic_format(&self, request: &ChatCompletionParameters) -> serde_json::Value {
+    pub(crate) fn convert_to_anthropic_format(
+        &self,
+        request: &ChatCompletionParameters,
+    ) -> serde_json::Value {
         let (system_messages, messages) = self.convert_messages(&request.messages);
 
         let mut anthropic_request = json!({
@@ -223,9 +234,15 @@ impl AnthropicProvider {
                         "content": self.extract_content_text(content)
                     }));
                 }
-                ChatMessage::Assistant { content, tool_calls, .. } => {
+                ChatMessage::Assistant {
+                    content,
+                    tool_calls,
+                    ..
+                } => {
                     let is_final = i == messages.len() - 1;
-                    if let Some(assistant_content) = self.build_assistant_content(content, tool_calls, is_final) {
+                    if let Some(assistant_content) =
+                        self.build_assistant_content(content, tool_calls, is_final)
+                    {
                         converted_messages.push(json!({
                             "role": "assistant",
                             "content": assistant_content
@@ -238,7 +255,11 @@ impl AnthropicProvider {
                         "content": self.extract_content_text(content)
                     }));
                 }
-                ChatMessage::Tool { content, tool_call_id, .. } => {
+                ChatMessage::Tool {
+                    content,
+                    tool_call_id,
+                    ..
+                } => {
                     converted_messages.push(json!({
                         "role": "user",
                         "content": [{
@@ -254,11 +275,16 @@ impl AnthropicProvider {
         (system_messages, converted_messages)
     }
 
-    fn build_assistant_content(&self, content: &Option<ChatMessageContent>, tool_calls: &Option<Vec<ToolCall>>, is_final: bool) -> Option<serde_json::Value> {
+    fn build_assistant_content(
+        &self,
+        content: &Option<ChatMessageContent>,
+        tool_calls: &Option<Vec<ToolCall>>,
+        is_final: bool,
+    ) -> Option<serde_json::Value> {
         match tool_calls {
             Some(calls) => {
                 let mut blocks = Vec::new();
-                
+
                 // Add text content if present
                 if let Some(text_content) = content {
                     let text = self.extract_content_text(text_content);
@@ -266,10 +292,11 @@ impl AnthropicProvider {
                         blocks.push(json!({"type": "text", "text": text}));
                     }
                 }
-                
+
                 // Add tool_use blocks
                 for call in calls {
-                    let input = serde_json::from_str(&call.function.arguments).unwrap_or_else(|_| json!({}));
+                    let input = serde_json::from_str(&call.function.arguments)
+                        .unwrap_or_else(|_| json!({}));
                     blocks.push(json!({
                         "type": "tool_use",
                         "id": call.id,
@@ -277,12 +304,15 @@ impl AnthropicProvider {
                         "input": input
                     }));
                 }
-                
+
                 Some(json!(blocks))
             }
             None => {
-                let text = content.as_ref().map(|c| self.extract_content_text(c)).unwrap_or_default();
-                
+                let text = content
+                    .as_ref()
+                    .map(|c| self.extract_content_text(c))
+                    .unwrap_or_default();
+
                 // Only allow empty content if this is the final assistant message
                 if text.is_empty() && !is_final {
                     None // Skip this empty assistant message
@@ -293,7 +323,10 @@ impl AnthropicProvider {
         }
     }
 
-    fn convert_tools(&self, tools: &[openai_dive::v1::resources::chat::ChatCompletionTool]) -> Vec<serde_json::Value> {
+    fn convert_tools(
+        &self,
+        tools: &[openai_dive::v1::resources::chat::ChatCompletionTool],
+    ) -> Vec<serde_json::Value> {
         tools.iter().map(|tool| {
             json!({
                 "name": tool.function.name,
@@ -307,23 +340,30 @@ impl AnthropicProvider {
         match content {
             ChatMessageContent::Text(text) => text.clone(),
             ChatMessageContent::ContentPart(parts) => {
-                parts.iter().filter_map(|part| {
-                    match part {
-                        openai_dive::v1::resources::chat::ChatMessageContentPart::Text(text_part) => {
-                            Some(text_part.text.clone())
+                parts
+                    .iter()
+                    .filter_map(|part| {
+                        match part {
+                            openai_dive::v1::resources::chat::ChatMessageContentPart::Text(
+                                text_part,
+                            ) => Some(text_part.text.clone()),
+                            _ => None, // Skip images, audio, etc.
                         }
-                        _ => None, // Skip images, audio, etc.
-                    }
-                }).collect::<Vec<_>>().join(" ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
             }
             ChatMessageContent::None => String::new(),
         }
     }
 
-    fn convert_from_anthropic_format(&self, response: serde_json::Value) -> Result<ChatCompletionResponse, LlmError> {
+    fn convert_from_anthropic_format(
+        &self,
+        response: serde_json::Value,
+    ) -> Result<ChatCompletionResponse, LlmError> {
         let mut text_content = Vec::new();
         let mut tool_calls = Vec::new();
-        
+
         // Parse content array
         if let Some(content_array) = response["content"].as_array() {
             for content_block in content_array {
@@ -337,7 +377,7 @@ impl AnthropicProvider {
                         if let (Some(id), Some(name), Some(input)) = (
                             content_block["id"].as_str(),
                             content_block["name"].as_str(),
-                            content_block["input"].as_object()
+                            content_block["input"].as_object(),
                         ) {
                             tool_calls.push(ToolCall {
                                 id: id.to_string(),
@@ -345,7 +385,7 @@ impl AnthropicProvider {
                                 function: Function {
                                     name: name.to_string(),
                                     arguments: serde_json::to_string(input).unwrap_or_default(),
-                                }
+                                },
                             });
                         }
                     }
@@ -353,18 +393,22 @@ impl AnthropicProvider {
                 }
             }
         }
-        
+
         // Combine text content
         let combined_text = text_content.join(" ").trim().to_string();
-        let content = if combined_text.is_empty() { 
-            None 
-        } else { 
+        let content = if combined_text.is_empty() {
+            None
+        } else {
             Some(ChatMessageContent::Text(combined_text))
         };
-        
+
         // Convert tool_calls to Option
-        let tool_calls_option = if tool_calls.is_empty() { None } else { Some(tool_calls) };
-        
+        let tool_calls_option = if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        };
+
         Ok(ChatCompletionResponse {
             id: Some(response["id"].as_str().unwrap_or("").to_string()),
             object: "chat.completion".to_string(),
@@ -386,8 +430,11 @@ impl AnthropicProvider {
             }],
             usage: Some(Usage {
                 prompt_tokens: Some(response["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32),
-                completion_tokens: Some(response["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32),
-                total_tokens: response["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32 + response["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
+                completion_tokens: Some(
+                    response["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32
+                ),
+                total_tokens: response["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32
+                    + response["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
                 prompt_tokens_details: None,
                 completion_tokens_details: None,
             }),
@@ -402,7 +449,7 @@ impl LlmProvider for AnthropicProvider {
     async fn models(&self) -> Result<ListModelResponse, LlmError> {
         // Anthropic doesn't have a models endpoint, so we return a hardcoded list
         use openai_dive::v1::resources::model::Model;
-        
+
         let models = vec![
             Model {
                 id: "claude-3-5-sonnet-20241022".to_string(),
@@ -442,10 +489,14 @@ impl LlmProvider for AnthropicProvider {
         })
     }
 
-    async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {
+    async fn chat(
+        &self,
+        request: ChatCompletionParameters,
+    ) -> Result<ChatCompletionResponse, LlmError> {
         let anthropic_request = self.convert_to_anthropic_format(&request);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&format!("{}/messages", ANTHROPIC_API_BASE))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -467,8 +518,9 @@ impl LlmProvider for AnthropicProvider {
         let mut anthropic_request = self.convert_to_anthropic_format(&request);
         // Add streaming parameter
         anthropic_request["stream"] = json!(true);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(&format!("{}/messages", ANTHROPIC_API_BASE))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -496,15 +548,12 @@ impl LlmProvider for AnthropicProvider {
     fn name(&self) -> &'static str {
         "anthropic"
     }
-    
+
     fn info() -> ProviderInfo {
         ProviderInfo {
             name: "anthropic",
             display_name: "Anthropic (Claude 3.5 Sonnet, Claude 3 Opus)",
-            env_vars: vec![
-                EnvVar::required("ANTHROPIC_API_KEY", "Anthropic API key"),
-            ],
+            env_vars: vec![EnvVar::required("ANTHROPIC_API_KEY", "Anthropic API key")],
         }
     }
-    
 }

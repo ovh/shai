@@ -1,4 +1,3 @@
-
 static GERUND_PROMPT: &str = r#"
 Transform the user's request into a single uplifting verb ending in -ing that captures the essence of their message. Your response must be exactly one word - no explanations, no punctuation, no extra text. Capitalize only the first letter.
 
@@ -16,7 +15,6 @@ Forbidden categories:
 
 Think of yourself as a wordsmith creating delightful micro-poetry for status displays. The goal is to make routine development tasks feel more engaging and human.
 "#;
-
 
 pub fn gerund_prompt() -> String {
     GERUND_PROMPT.to_string()

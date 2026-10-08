@@ -48,6 +48,7 @@ pub struct AssistantMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum Message {
     User(UserMessage),
     Assistant(AssistantMessage),
@@ -58,7 +59,7 @@ pub enum Message {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCapability {
     #[serde(rename = "type")]
-    pub tool_type: String,  // "capability"
+    pub tool_type: String, // "capability"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -73,7 +74,7 @@ pub struct AgentCapability {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenAiApi {
     #[serde(rename = "type")]
-    pub tool_type: String,  // "openai"
+    pub tool_type: String, // "openai"
     pub url: String,
     pub description: String,
     pub model: String,
@@ -83,7 +84,7 @@ pub struct OpenAiApi {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpTool {
     #[serde(rename = "type")]
-    pub tool_type: String,  // "mcp"
+    pub tool_type: String, // "mcp"
     pub url: String,
 }
 
@@ -109,9 +110,7 @@ pub enum AgentTool {
         model: String,
     },
     #[serde(rename = "mcp")]
-    Mcp {
-        url: String,
-    },
+    Mcp { url: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +138,7 @@ pub struct MultiModalStreamingResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum ResponseMessage {
     Assistant(AssistantMessage),
     PreviousCall(PreviousCall),

@@ -3,7 +3,7 @@ use shai_llm::ToolDescription;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::tools::{ToolResult, ToolCall, AnyTool, ToolCapability};
+use crate::tools::{AnyTool, ToolCall, ToolCapability, ToolResult};
 
 #[derive(Debug, Clone)]
 pub struct McpToolDescription {
@@ -16,8 +16,13 @@ pub struct McpToolDescription {
 pub trait McpClient: Send + Sync {
     async fn connect(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn disconnect(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    async fn list_tools(&self) -> Result<Vec<McpToolDescription>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn execute_tool(&self, tool_call: ToolCall) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_tools(
+        &self,
+    ) -> Result<Vec<McpToolDescription>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn execute_tool(
+        &self,
+        tool_call: ToolCall,
+    ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct WrappedMcpTool {
@@ -50,7 +55,11 @@ impl AnyTool for WrappedMcpTool {
         &[ToolCapability::Network]
     }
 
-    async fn execute_json(&self, params: serde_json::Value, cancel_token: Option<tokio_util::sync::CancellationToken>) -> ToolResult {
+    async fn execute_json(
+        &self,
+        params: serde_json::Value,
+        _cancel_token: Option<tokio_util::sync::CancellationToken>,
+    ) -> ToolResult {
         let tool_call = ToolCall {
             tool_call_id: format!("mcp-{}", uuid::Uuid::new_v4()),
             tool_name: self.desc.name.clone(),
@@ -73,13 +82,16 @@ impl AnyTool for WrappedMcpTool {
 }
 
 /// Create AnyTool instances from an MCP client
-pub async fn get_mcp_tools(mut client: Box<dyn McpClient>, mcp_name: &str) -> Result<Vec<Box<dyn AnyTool>>, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn get_mcp_tools(
+    mut client: Box<dyn McpClient>,
+    mcp_name: &str,
+) -> Result<Vec<Box<dyn AnyTool>>, Box<dyn std::error::Error + Send + Sync>> {
     // Auto-connect if not already connected
     client.connect().await?;
-    
+
     let tool_descriptions = client.list_tools().await?;
     let client_ref = Arc::new(Mutex::new(client));
-    
+
     let wrapped_tools: Vec<Box<dyn AnyTool>> = tool_descriptions
         .into_iter()
         .map(|desc| {
@@ -90,7 +102,6 @@ pub async fn get_mcp_tools(mut client: Box<dyn McpClient>, mcp_name: &str) -> Re
             }) as Box<dyn AnyTool>
         })
         .collect();
-    
+
     Ok(wrapped_tools)
 }
-

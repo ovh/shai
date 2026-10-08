@@ -1,14 +1,14 @@
 // llm/providers/ovhcloud.rs
-use crate::provider::{LlmProvider, LlmError, LlmStream, ProviderInfo, EnvVar};
+use crate::provider::{EnvVar, LlmError, LlmProvider, LlmStream, ProviderInfo};
 use async_trait::async_trait;
 use futures::StreamExt;
 use openai_dive::v1::{
     api::Client,
+    error::APIError,
     resources::{
-        chat::{ChatCompletionParameters, ChatCompletionResponse, ChatCompletionChunkResponse},
+        chat::{ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse},
         model::ListModelResponse,
     },
-    error::APIError
 };
 
 const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
@@ -43,29 +43,43 @@ impl LlmProvider for OllamaProvider {
 
     async fn default_model(&self) -> Result<String, LlmError> {
         let models = self.models().await?; // Get the models
-    
-        models.data.iter()
+
+        models
+            .data
+            .iter()
             .find(|m| m.id.to_lowercase().contains("smol"))
             .or_else(|| models.data.first())
             .map(|m| m.id.clone())
             .ok_or_else(|| "no model available".into())
     }
 
-    async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {
-        let response = self.client.chat().create(request).await
+    async fn chat(
+        &self,
+        request: ChatCompletionParameters,
+    ) -> Result<ChatCompletionResponse, LlmError> {
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
         Ok(response)
     }
 
-    async fn chat_stream(&self, mut request: ChatCompletionParameters) -> Result<LlmStream, LlmError> {
+    async fn chat_stream(
+        &self,
+        mut request: ChatCompletionParameters,
+    ) -> Result<LlmStream, LlmError> {
         request.stream = Some(true);
-        
-        let stream = self.client.chat().create_stream(request).await
+
+        let stream = self
+            .client
+            .chat()
+            .create_stream(request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
 
-        let converted_stream = stream.map(|result| {
-            result.map_err(|e| Box::new(e) as LlmError)
-        });
+        let converted_stream = stream.map(|result| result.map_err(|e| Box::new(e) as LlmError));
 
         Ok(Box::new(Box::pin(converted_stream)))
     }
@@ -81,16 +95,15 @@ impl LlmProvider for OllamaProvider {
     fn name(&self) -> &'static str {
         "ollama"
     }
-    
+
     fn info() -> ProviderInfo {
         ProviderInfo {
             name: "ollama",
             display_name: "Ollama",
-            env_vars: vec![
-                EnvVar::optional("OLLAMA_BASE_URL", "ollama base open ai compat url"),
-            ],
+            env_vars: vec![EnvVar::optional(
+                "OLLAMA_BASE_URL",
+                "ollama base open ai compat url",
+            )],
         }
     }
-    
 }
-

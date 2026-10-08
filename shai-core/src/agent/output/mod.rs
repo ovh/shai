@@ -1,7 +1,7 @@
-pub mod stdout;
-pub mod pretty;
 pub mod log;
+pub mod pretty;
+pub mod stdout;
 
-pub use stdout::StdoutEventManager;
-pub use pretty::PrettyFormatter;
 pub use log::FileEventLogger;
+pub use pretty::PrettyFormatter;
+pub use stdout::StdoutEventManager;

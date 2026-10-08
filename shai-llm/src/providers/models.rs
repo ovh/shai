@@ -66,8 +66,9 @@ pub async fn list_models_compat(client: &Client) -> Result<ListModelResponse, Ll
 /// Parse a `/models` payload into the OpenAI representation, filling in defaults for
 /// whatever the endpoint left out.
 fn parse_models(body: &str) -> Result<ListModelResponse, LlmError> {
-    let payload: ModelListPayload = serde_json::from_str(body)
-        .map_err(|e| -> LlmError { format!("could not parse model list ({}): {}", e, truncate(body)).into() })?;
+    let payload: ModelListPayload = serde_json::from_str(body).map_err(|e| -> LlmError {
+        format!("could not parse model list ({}): {}", e, truncate(body)).into()
+    })?;
 
     let data = payload
         .into_entries()

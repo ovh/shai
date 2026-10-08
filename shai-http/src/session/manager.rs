@@ -1,13 +1,13 @@
+use openai_dive::v1::resources::chat::ChatMessage;
 use shai_core::agent::{Agent, AgentError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info};
-use openai_dive::v1::resources::chat::ChatMessage;
 
-use shai_core::agent::AgentBuilder;
 use crate::session::{log_event, logger::colored_session_id};
-use crate::session::persist::SessionPersist;
+use shai_core::agent::AgentBuilder;
+use shai_core::session::SessionPersist;
 
 use super::AgentSession;
 
@@ -34,7 +34,7 @@ impl Default for SessionManagerConfig {
 pub struct SessionManager {
     sessions: Arc<Mutex<HashMap<String, Arc<AgentSession>>>>,
     max_sessions: Option<usize>,
-    ephemeral: bool
+    ephemeral: bool,
 }
 
 impl SessionManager {
@@ -42,7 +42,7 @@ impl SessionManager {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             max_sessions: config.max_sessions,
-            ephemeral: config.ephemeral
+            ephemeral: config.ephemeral,
         }
     }
 
@@ -54,7 +54,11 @@ impl SessionManager {
         ephemeral: bool,
         trace: Option<Vec<ChatMessage>>,
     ) -> Result<Arc<AgentSession>, AgentError> {
-        info!("[{}] - {} Creating new session", http_request_id, colored_session_id(session_id));
+        info!(
+            "[{}] - {} Creating new session",
+            http_request_id,
+            colored_session_id(session_id)
+        );
 
         // Build the agent with optional trace
         let mut builder = AgentBuilder::create(agent_name.clone().filter(|name| name != "default"))
@@ -86,14 +90,24 @@ impl SessionManager {
         let agent_task = tokio::spawn(async move {
             match agent.run().await {
                 Ok(_) => {
-                    info!("{} - Agent Terminated", colored_session_id(&sid_for_cleanup));
+                    info!(
+                        "{} - Agent Terminated",
+                        colored_session_id(&sid_for_cleanup)
+                    );
                 }
                 Err(e) => {
-                    error!("{} - Agent execution error: {}", colored_session_id(&sid_for_cleanup), e);
+                    error!(
+                        "{} - Agent execution error: {}",
+                        colored_session_id(&sid_for_cleanup),
+                        e
+                    );
                 }
             }
             sessions_for_cleanup.lock().await.remove(&sid_for_cleanup);
-            info!("{} - Session removed from manager", colored_session_id(&sid_for_cleanup));
+            info!(
+                "{} - Session removed from manager",
+                colored_session_id(&sid_for_cleanup)
+            );
         });
 
         let session = Arc::new(AgentSession::new(
@@ -122,7 +136,11 @@ impl SessionManager {
         {
             let sessions = self.sessions.lock().await;
             if let Some(session) = sessions.get(session_id) {
-                info!("[{}] - {} Using existing in-memory session", http_request_id, colored_session_id(&session_id));
+                info!(
+                    "[{}] - {} Using existing in-memory session",
+                    http_request_id,
+                    colored_session_id(session_id)
+                );
                 return Ok(session.clone());
             }
         }
@@ -130,16 +148,22 @@ impl SessionManager {
         // Try to load from disk
         match SessionPersist::load_session(session_id) {
             Ok(session_data) => {
-                info!("[{}] - {} Loading session from disk", http_request_id, colored_session_id(session_id));
+                info!(
+                    "[{}] - {} Loading session from disk",
+                    http_request_id,
+                    colored_session_id(session_id)
+                );
 
                 // Restore the session with the saved trace
-                let session = self.create_session(
-                    &http_request_id.to_string(),
-                    session_id,
-                    Some(agent_name),
-                    false, // Loaded sessions are not ephemeral
-                    Some(session_data.trace), // Initialize with saved trace
-                ).await?;
+                let session = self
+                    .create_session(
+                        &http_request_id.to_string(),
+                        session_id,
+                        Some(agent_name),
+                        false,                    // Loaded sessions are not ephemeral
+                        Some(session_data.trace), // Initialize with saved trace
+                    )
+                    .await?;
 
                 // Store in manager
                 let mut sessions = self.sessions.lock().await;
@@ -168,9 +192,9 @@ impl SessionManager {
     ) -> Result<Arc<AgentSession>, AgentError> {
         // Check if ephemeral-only mode is enforced
         if self.ephemeral && !ephemeral {
-            return Err(AgentError::ExecutionError(format!(
-                "Only Ephemeral session are authorized on this server"
-            )));
+            return Err(AgentError::ExecutionError(
+                "Only Ephemeral session are authorized on this server".to_string(),
+            ));
         }
 
         let mut sessions = self.sessions.lock().await;
@@ -193,7 +217,15 @@ impl SessionManager {
             }
         }
 
-        let session = self.create_session(&http_request_id.to_string(), session_id, agent_name, ephemeral, None).await?;
+        let session = self
+            .create_session(
+                &http_request_id.to_string(),
+                session_id,
+                agent_name,
+                ephemeral,
+                None,
+            )
+            .await?;
 
         // Store all sessions in hashmap (ephemeral sessions will be automatically cleaned up when agent terminates)
         sessions.insert(session_id.to_string(), session.clone());
@@ -202,7 +234,11 @@ impl SessionManager {
     }
 
     /// Cancel a session (stop the agent)
-    pub async fn cancel_session(&self, http_request_id: &String, session_id: &str) -> Result<(), AgentError> {
+    pub async fn cancel_session(
+        &self,
+        http_request_id: &String,
+        session_id: &str,
+    ) -> Result<(), AgentError> {
         if let Some(session) = self.sessions.lock().await.get(session_id) {
             session.cancel(http_request_id).await?;
         }

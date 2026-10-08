@@ -1,25 +1,26 @@
 #[cfg(test)]
 mod tests {
-    use crate::tools::{StdioClient, HttpClient, SseClient, McpClient, McpConfig, create_mcp_client};
     use crate::tools::ToolCall;
+    use crate::tools::{
+        create_mcp_client, HttpClient, McpClient, McpConfig, SseClient, StdioClient,
+    };
     use serde_json::json;
     use std::process::Command;
     use tokio;
 
     /// Check if uvx is available on the system
     fn is_uvx_available() -> bool {
-        Command::new("uvx")
-            .arg("--version")
-            .output()
-            .is_ok()
+        Command::new("uvx").arg("--version").output().is_ok()
     }
 
     /// Check if MCP server is running on localhost:8000
     async fn is_mcp_server_available() -> bool {
         tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            reqwest::get("http://localhost:8000")
-        ).await.is_ok()
+            reqwest::get("http://localhost:8000"),
+        )
+        .await
+        .is_ok()
     }
 
     #[tokio::test]
@@ -31,10 +32,7 @@ mod tests {
         }
 
         // Create stdio client for mcp-server-fetch
-        let mut client = StdioClient::new(
-            "uvx".to_string(),
-            vec!["mcp-server-fetch".to_string()]
-        );
+        let mut client = StdioClient::new("uvx".to_string(), vec!["mcp-server-fetch".to_string()]);
 
         // Test connection
         match client.connect().await {
@@ -64,13 +62,13 @@ mod tests {
         };
 
         // Find a fetch tool to test
-        let fetch_tool = tools.iter().find(|tool| {
-            tool.name.to_lowercase().contains("fetch")
-        });
+        let fetch_tool = tools
+            .iter()
+            .find(|tool| tool.name.to_lowercase().contains("fetch"));
 
         if let Some(tool) = fetch_tool {
             println!("✅ Found tool to test: {}", tool.name);
-            
+
             // Test executing the tool with a simple HTTP request
             let tool_call = ToolCall {
                 tool_call_id: "test-1".to_string(),
@@ -83,7 +81,7 @@ mod tests {
             match client.execute_tool(tool_call).await {
                 Ok(result) => {
                     println!("✅ Successfully executed tool");
-                    println!("Result: {}", result.to_string());
+                    println!("Result: {}", result);
                 }
                 Err(e) => {
                     println!("❌ Failed to execute tool: {}", e);
@@ -108,10 +106,7 @@ mod tests {
             return;
         }
 
-        let mut client = StdioClient::new(
-            "uvx".to_string(), 
-            vec!["mcp-server-fetch".to_string()]
-        );
+        let mut client = StdioClient::new("uvx".to_string(), vec!["mcp-server-fetch".to_string()]);
 
         // Test that we can connect and get an empty or non-empty tool list
         if client.connect().await.is_ok() {
@@ -123,10 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mcp_stdio_invalid_command() {
-        let mut client = StdioClient::new(
-            "nonexistent-command".to_string(),
-            vec![]
-        );
+        let mut client = StdioClient::new("nonexistent-command".to_string(), vec![]);
 
         // This should fail to connect
         match client.connect().await {
@@ -148,7 +140,7 @@ mod tests {
         // Test HTTP config
         let http_config = McpConfig::Http {
             url: "http://localhost:8080".to_string(),
-            auth: None
+            auth: None,
         };
         let _http_client = create_mcp_client(http_config);
         println!("✅ Successfully created HttpClient via factory");
@@ -172,7 +164,10 @@ mod tests {
         }
 
         // Create HTTP client for MCP server on localhost:8000/mcp
-        let mut client = HttpClient::new_with_auth("https://localhost:8000/mcp".to_string(), Some("TEST_BEARER".to_string()));
+        let mut client = HttpClient::new_with_auth(
+            "https://localhost:8000/mcp".to_string(),
+            Some("TEST_BEARER".to_string()),
+        );
 
         // Test connection
         match client.connect().await {
@@ -200,13 +195,13 @@ mod tests {
         };
 
         // Find a fetch tool to test
-        let fetch_tool = tools.iter().find(|tool| {
-            tool.name.to_lowercase().contains("fetch")
-        });
+        let fetch_tool = tools
+            .iter()
+            .find(|tool| tool.name.to_lowercase().contains("fetch"));
 
         if let Some(tool) = fetch_tool {
             println!("✅ Found tool to test: {}", tool.name);
-            
+
             // Test executing the tool with a simple HTTP request
             let tool_call = ToolCall {
                 tool_call_id: "test-http-1".to_string(),
@@ -219,7 +214,7 @@ mod tests {
             match client.execute_tool(tool_call).await {
                 Ok(result) => {
                     println!("✅ Successfully executed tool via HTTP");
-                    println!("Result: {}", result.to_string());
+                    println!("Result: {}", result);
                 }
                 Err(e) => {
                     println!("❌ Failed to execute tool: {}", e);
@@ -274,13 +269,13 @@ mod tests {
         };
 
         // Find a fetch tool to test
-        let fetch_tool = tools.iter().find(|tool| {
-            tool.name.to_lowercase().contains("fetch")
-        });
+        let fetch_tool = tools
+            .iter()
+            .find(|tool| tool.name.to_lowercase().contains("fetch"));
 
         if let Some(tool) = fetch_tool {
             println!("✅ Found tool to test: {}", tool.name);
-            
+
             // Test executing the tool with a simple HTTP request
             let tool_call = ToolCall {
                 tool_call_id: "test-sse-1".to_string(),
@@ -293,7 +288,7 @@ mod tests {
             match client.execute_tool(tool_call).await {
                 Ok(result) => {
                     println!("✅ Successfully executed tool via SSE");
-                    println!("Result: {}", result.to_string());
+                    println!("Result: {}", result);
                 }
                 Err(e) => {
                     println!("❌ Failed to execute tool: {}", e);

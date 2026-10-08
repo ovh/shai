@@ -1,7 +1,7 @@
 use axum::{
     extract::{rejection::JsonRejection, FromRequest},
     http::StatusCode,
-    response::{IntoResponse, Response, Json},
+    response::{IntoResponse, Json, Response},
 };
 use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -32,7 +32,11 @@ impl ErrorResponse {
     }
 
     pub fn not_found(message: String) -> Self {
-        Self::new(message, "not_found".to_string(), Some("model_not_found".to_string()))
+        Self::new(
+            message,
+            "not_found".to_string(),
+            Some("model_not_found".to_string()),
+        )
     }
 
     pub fn invalid_request(message: String) -> Self {

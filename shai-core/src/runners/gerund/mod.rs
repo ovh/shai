@@ -1,5 +1,5 @@
-pub mod prompt;
 pub mod gerund;
+pub mod prompt;
 
 #[cfg(test)]
 mod tests;

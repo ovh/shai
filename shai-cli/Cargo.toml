@@ -1,6 +1,6 @@
 [package]
 name = "shai"
-version = "0.1.11"
+version = "0.2.1"
 edition = "2021"
 
 
@@ -15,29 +15,28 @@ tempfile = "3.20.0"
 serde = { version = "1.0", features = ["derive"] }
 rmp-serde = "1.1"
 tokio = { version = "1.0", features = ["full"] }
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 futures = "0.3"
-ratatui = { git = "https://github.com/Marlinski/ratatui", branch = "feature/viewport-resize-v29", features = ["crossterm"] }
-ansi-to-tui = "7.0.0"
-# ratatui = { version = "0.29", features = ["crossterm"] }
-tui-textarea = { version = "0.7", features = ["crossterm", "ratatui"] }
+ratatui = { version = "0.30", features = ["crossterm", "crossterm_0_29"] }
+ansi-to-tui = "8.0"
+ratatui-textarea = { version = "0.9", features = ["crossterm"] }
 serde_json = "1.0"
 figrs = "0.3"
 rand = "0.9"
 async-trait = "0.1"
 console = "0.16"
 ringbuffer = "0.16"
-cli-clipboard = "0.4"
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 textwrap = "0.16"
 jwalk = "0.8.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.0", features = ["v4"] }
+tracing = "0.1"
 
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [lints.rust]
-dead_code = "allow"
-unused_variables = "allow"
 unused_mut = "allow"
 unused_imports = "allow"

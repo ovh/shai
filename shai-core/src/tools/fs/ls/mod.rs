@@ -1,8 +1,8 @@
-pub mod structs;
 pub mod ls;
+pub mod structs;
 
 #[cfg(test)]
 mod tests;
 
-pub use structs::{LsToolParams, FileInfo};
 pub use ls::LsTool;
+pub use structs::{FileInfo, LsToolParams};

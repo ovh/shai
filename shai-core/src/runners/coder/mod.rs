@@ -1,6 +1,6 @@
 pub mod coder;
-pub mod prompt;
 pub mod env;
+pub mod prompt;
 
 pub use coder::CoderBrain;
 

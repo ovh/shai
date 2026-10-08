@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
-use crate::session::{SessionManager, SessionManagerConfig};
 use crate::apis;
+use crate::session::{SessionManager, SessionManagerConfig};
 
 /// Configuration for the HTTP server
 #[derive(Clone, Debug)]
@@ -46,11 +46,8 @@ pub struct ServerState {
     pub session_manager: Arc<SessionManager>,
 }
 
-
 /// Start the HTTP server with SSE streaming
-pub async fn start_server(
-    config: ServerConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_server(config: ServerConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Create session manager
     let session_manager = SessionManager::new(config.session_manager.clone());
 
@@ -60,7 +57,14 @@ pub async fn start_server(
     } else {
         println!("  Max sessions: \x1b[1munlimited\x1b[0m");
     }
-    println!("  Default mode: \x1b[1m{}\x1b[0m", if config.session_manager.ephemeral { "ephemeral" } else { "persistent" });
+    println!(
+        "  Default mode: \x1b[1m{}\x1b[0m",
+        if config.session_manager.ephemeral {
+            "ephemeral"
+        } else {
+            "persistent"
+        }
+    );
     println!();
 
     let state = ServerState {
@@ -69,14 +73,29 @@ pub async fn start_server(
 
     let app = Router::new()
         // Simple API
-        .route("/v1/multimodal", post(apis::simple::handle_multimodal_query_stream))
-        .route("/v1/multimodal/{session_id}", post(apis::simple::handle_multimodal_query_stream_with_session))
+        .route(
+            "/v1/multimodal",
+            post(apis::simple::handle_multimodal_query_stream),
+        )
+        .route(
+            "/v1/multimodal/{session_id}",
+            post(apis::simple::handle_multimodal_query_stream_with_session),
+        )
         // OpenAI-compatible Response API
         .route("/v1/responses", post(apis::openai::handle_response))
-        .route("/v1/responses/{response_id}", get(apis::openai::handle_get_response))
-        .route("/v1/responses/{response_id}/cancel", post(apis::openai::handle_cancel_response))
+        .route(
+            "/v1/responses/{response_id}",
+            get(apis::openai::handle_get_response),
+        )
+        .route(
+            "/v1/responses/{response_id}/cancel",
+            post(apis::openai::handle_cancel_response),
+        )
         // OpenAI-compatible Chat Completion API
-        .route("/v1/chat/completions", post(apis::openai::handle_chat_completion))
+        .route(
+            "/v1/chat/completions",
+            post(apis::openai::handle_chat_completion),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -89,7 +108,9 @@ pub async fn start_server(
     println!("  \x1b[1mPOST /v1/responses\x1b[0m                    - OpenAI Responses API (stateful/stateless)");
     println!("  \x1b[1mGET  /v1/responses/:id\x1b[0m                - Get response by ID");
     println!("  \x1b[1mPOST /v1/responses/:id/cancel\x1b[0m        - Cancel a response");
-    println!("  \x1b[1mPOST /v1/multimodal\x1b[0m                   - Simple multimodal API (streaming)");
+    println!(
+        "  \x1b[1mPOST /v1/multimodal\x1b[0m                   - Simple multimodal API (streaming)"
+    );
     println!("  \x1b[1mPOST /v1/multimodal/:session_id\x1b[0m      - Simple multimodal API (with session)");
 
     // List available agents

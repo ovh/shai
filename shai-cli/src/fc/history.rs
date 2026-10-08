@@ -1,7 +1,7 @@
 use console::strip_ansi_codes;
 use ringbuffer::{AllocRingBuffer, RingBuffer};
+use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandEntry {
@@ -15,13 +15,17 @@ pub struct CommandEntry {
 
 mod ringbuffer_serde {
     use super::*;
-    use serde::{Serializer, Deserializer};
+    use serde::{Deserializer, Serializer};
 
     pub fn serialize<S>(buffer: &AllocRingBuffer<u8>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        buffer.iter().copied().collect::<Vec<u8>>().serialize(serializer)
+        buffer
+            .iter()
+            .copied()
+            .collect::<Vec<u8>>()
+            .serialize(serializer)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<AllocRingBuffer<u8>, D::Error>
@@ -51,6 +55,7 @@ impl CommandEntry {
         }
     }
 
+    #[allow(dead_code)] // used by tests
     pub fn with_output(cmd: String, output_data: &[u8], output_capacity: usize) -> Self {
         let mut entry = Self::new(cmd, output_capacity);
         for &byte in output_data {
@@ -69,6 +74,7 @@ impl CommandEntry {
         self.exit_code = Some(code);
     }
 
+    #[allow(dead_code)] // used by tests
     pub fn set_duration(&mut self, duration_ms: u64) {
         self.duration_ms = Some(duration_ms);
     }
@@ -79,18 +85,12 @@ impl CommandEntry {
         strip_ansi_codes(&s).to_string()
     }
 
+    #[allow(dead_code)] // used by tests
     pub fn get_output_lines(&self) -> Vec<String> {
-        self.get_output_as_string().lines().map(|s| s.to_string()).collect()
-    }
-
-    pub fn get_last_output_lines(&self, n: usize) -> Vec<String> {
-        let lines = self.get_output_lines();
-        let start_idx = if lines.len() > n {
-            lines.len() - n
-        } else {
-            0
-        };
-        lines[start_idx..].to_vec()
+        self.get_output_as_string()
+            .lines()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     pub fn is_success(&self) -> bool {
@@ -134,6 +134,7 @@ pub struct HistoryStats {
 }
 
 impl HistoryStats {
+    #[allow(dead_code)] // used by tests
     pub fn success_rate(&self) -> f64 {
         if self.total_commands == 0 {
             0.0
@@ -160,10 +161,10 @@ mod tests {
     fn test_command_entry_with_output() {
         let output = b"file1.txt\nfile2.txt\n";
         let entry = CommandEntry::with_output("ls".to_string(), output, 1024);
-        
+
         assert_eq!(entry.cmd, "ls");
         assert_eq!(entry.get_output_as_string(), "file1.txt\nfile2.txt\n");
-        
+
         let lines = entry.get_output_lines();
         assert_eq!(lines, vec!["file1.txt", "file2.txt"]);
     }
@@ -171,11 +172,11 @@ mod tests {
     #[test]
     fn test_command_entry_modification() {
         let mut entry = CommandEntry::new("echo hello".to_string(), 1024);
-        
+
         entry.add_output(b"hello\n");
         entry.set_exit_code(0);
         entry.set_duration(15);
-        
+
         assert_eq!(entry.get_output_as_string(), "hello\n");
         assert_eq!(entry.exit_code, Some(0));
         assert_eq!(entry.duration_ms, Some(15));
@@ -185,17 +186,17 @@ mod tests {
     #[test]
     fn test_command_history_basic() {
         let mut history = CommandHistory::new(10);
-        
+
         assert!(history.is_empty());
         assert_eq!(history.len(), 0);
         assert_eq!(history.capacity(), 10);
-        
+
         history.enqueue(CommandEntry::new("ls".to_string(), 1024));
         history.enqueue(CommandEntry::new("pwd".to_string(), 1024));
-        
+
         assert_eq!(history.len(), 2);
         assert!(!history.is_empty());
-        
+
         let last = history.back().unwrap();
         assert_eq!(last.cmd, "pwd");
     }
@@ -203,10 +204,18 @@ mod tests {
     #[test]
     fn test_command_history_with_output() {
         let mut history = CommandHistory::new(5);
-        
-        history.enqueue(CommandEntry::with_output("echo hello".to_string(), b"hello\n", 1024));
-        history.enqueue(CommandEntry::with_output("echo world".to_string(), b"world\n", 1024));
-        
+
+        history.enqueue(CommandEntry::with_output(
+            "echo hello".to_string(),
+            b"hello\n",
+            1024,
+        ));
+        history.enqueue(CommandEntry::with_output(
+            "echo world".to_string(),
+            b"world\n",
+            1024,
+        ));
+
         let commands: Vec<&CommandEntry> = history.iter().collect();
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].get_output_as_string(), "hello\n");
@@ -216,12 +225,12 @@ mod tests {
     #[test]
     fn test_command_history_wrap_around() {
         let mut history = CommandHistory::new(3);
-        
+
         // Add more commands than capacity
         for i in 1..=5 {
             history.enqueue(CommandEntry::new(format!("command{}", i), 1024));
         }
-        
+
         assert_eq!(history.len(), 3);
         let commands: Vec<&CommandEntry> = history.iter().collect();
         assert_eq!(commands[0].cmd, "command3");
@@ -232,12 +241,12 @@ mod tests {
     #[test]
     fn test_find_commands() {
         let mut history = CommandHistory::new(10);
-        
+
         history.enqueue(CommandEntry::new("ls -la".to_string(), 1024));
         history.enqueue(CommandEntry::new("grep pattern file.txt".to_string(), 1024));
         history.enqueue(CommandEntry::new("ls -l".to_string(), 1024));
         history.enqueue(CommandEntry::new("cat file.txt".to_string(), 1024));
-        
+
         let ls_commands: Vec<&CommandEntry> = history
             .iter()
             .filter(|entry| entry.cmd.contains("ls"))
@@ -245,7 +254,7 @@ mod tests {
         assert_eq!(ls_commands.len(), 2);
         assert_eq!(ls_commands[0].cmd, "ls -la");
         assert_eq!(ls_commands[1].cmd, "ls -l");
-        
+
         let file_commands: Vec<&CommandEntry> = history
             .iter()
             .filter(|entry| entry.cmd.contains("file.txt"))
@@ -256,33 +265,29 @@ mod tests {
     #[test]
     fn test_command_filtering_by_exit_code() {
         let mut history = CommandHistory::new(10);
-        
+
         // Add commands with different exit codes
         let mut entry1 = CommandEntry::new("successful_cmd".to_string(), 1024);
         entry1.set_exit_code(0);
         history.enqueue(entry1);
-        
+
         let mut entry2 = CommandEntry::new("failed_cmd".to_string(), 1024);
         entry2.set_exit_code(1);
         history.enqueue(entry2);
-        
+
         let mut entry3 = CommandEntry::new("another_success".to_string(), 1024);
         entry3.set_exit_code(0);
         history.enqueue(entry3);
-        
-        let successful: Vec<&CommandEntry> = history
-            .iter()
-            .filter(|entry| entry.is_success())
-            .collect();
+
+        let successful: Vec<&CommandEntry> =
+            history.iter().filter(|entry| entry.is_success()).collect();
         assert_eq!(successful.len(), 2);
-        
-        let failed: Vec<&CommandEntry> = history
-            .iter()
-            .filter(|entry| !entry.is_success())
-            .collect();
+
+        let failed: Vec<&CommandEntry> =
+            history.iter().filter(|entry| !entry.is_success()).collect();
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].cmd, "failed_cmd");
-        
+
         let exit_code_1: Vec<&CommandEntry> = history
             .iter()
             .filter(|entry| entry.exit_code == Some(1))
@@ -294,33 +299,30 @@ mod tests {
     #[test]
     fn test_history_stats() {
         let mut history = CommandHistory::new(10);
-        
+
         // Add some commands with different outcomes
         let mut entry1 = CommandEntry::new("cmd1".to_string(), 1024);
         entry1.set_exit_code(0);
         entry1.set_duration(100);
         history.enqueue(entry1);
-        
+
         let mut entry2 = CommandEntry::new("cmd2".to_string(), 1024);
         entry2.set_exit_code(1);
         entry2.set_duration(200);
         history.enqueue(entry2);
-        
+
         let mut entry3 = CommandEntry::new("cmd3".to_string(), 1024);
         entry3.set_exit_code(0);
         entry3.set_duration(300);
         history.enqueue(entry3);
-        
+
         let all_commands: Vec<&CommandEntry> = history.iter().collect();
         let total = all_commands.len();
         let successful = all_commands.iter().filter(|e| e.is_success()).count();
         let failed = total - successful;
-        
+
         let avg_duration = if total > 0 {
-            let total_duration: u64 = all_commands
-                .iter()
-                .filter_map(|e| e.duration_ms)
-                .sum();
+            let total_duration: u64 = all_commands.iter().filter_map(|e| e.duration_ms).sum();
             Some(total_duration / total as u64)
         } else {
             None
@@ -332,7 +334,7 @@ mod tests {
             failed_commands: failed,
             average_duration_ms: avg_duration,
         };
-        
+
         assert_eq!(stats.total_commands, 3);
         assert_eq!(stats.successful_commands, 2);
         assert_eq!(stats.failed_commands, 1);
@@ -343,28 +345,42 @@ mod tests {
     #[test]
     fn test_get_last_commands() {
         let mut history = CommandHistory::new(10);
-        
+
         for i in 1..=5 {
             history.enqueue(CommandEntry::new(format!("command{}", i), 1024));
         }
-        
-        let last_3: Vec<&CommandEntry> = history.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
+
+        let last_3: Vec<&CommandEntry> = history
+            .iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         assert_eq!(last_3.len(), 3);
         assert_eq!(last_3[0].cmd, "command3");
         assert_eq!(last_3[1].cmd, "command4");
         assert_eq!(last_3[2].cmd, "command5");
-        
-        let last_10: Vec<&CommandEntry> = history.iter().rev().take(10).collect::<Vec<_>>().into_iter().rev().collect();
+
+        let last_10: Vec<&CommandEntry> = history
+            .iter()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         assert_eq!(last_10.len(), 5); // Only 5 commands exist
     }
 
     #[test]
     fn test_clear_history() {
         let mut history = CommandHistory::new(10);
-        
+
         history.enqueue(CommandEntry::new("test".to_string(), 1024));
         assert_eq!(history.len(), 1);
-        
+
         history.clear();
         assert_eq!(history.len(), 0);
         assert!(history.is_empty());
@@ -374,9 +390,13 @@ mod tests {
     fn test_export_as_text() {
         use super::CommandHistoryExt;
         let mut history = CommandHistory::new(10);
-        
-        history.enqueue(CommandEntry::with_output("echo hello".to_string(), b"hello\n", 1024));
-        
+
+        history.enqueue(CommandEntry::with_output(
+            "echo hello".to_string(),
+            b"hello\n",
+            1024,
+        ));
+
         let exported = history.export_as_text();
         assert!(exported.contains("Command: echo hello"));
         assert!(exported.contains("Output:\nhello"));

@@ -1,20 +1,21 @@
+#![allow(clippy::collapsible_match)]
 use axum::{
     extract::State,
-    response::{IntoResponse, Response, Sse, Json},
+    response::{IntoResponse, Json, Response, Sse},
 };
 use futures::StreamExt;
 use openai_dive::v1::resources::chat::{
-    ChatCompletionParameters, ChatCompletionResponse, ChatCompletionChoice,
-    ChatMessage, ChatMessageContent,
+    ChatCompletionChoice, ChatCompletionParameters, ChatCompletionResponse, ChatMessage,
+    ChatMessageContent,
 };
-use openai_dive::v1::resources::shared::{Usage, FinishReason};
+use openai_dive::v1::resources::shared::{FinishReason, Usage};
 use shai_core::agent::AgentEvent;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::info;
 use uuid::Uuid;
 
 use super::formatter::ChatCompletionFormatter;
-use crate::{ApiJson, ServerState, ErrorResponse, session_to_sse_stream};
+use crate::{session_to_sse_stream, ApiJson, ErrorResponse, ServerState};
 
 /// Handle OpenAI chat completion - supports both streaming and non-streaming
 pub async fn handle_chat_completion(
@@ -25,8 +26,10 @@ pub async fn handle_chat_completion(
     let session_id = Uuid::new_v4().to_string();
 
     let is_streaming = payload.stream.unwrap_or(false);
-    info!("[{}] POST /v1/chat/completions model={} stream={} (ephemeral)",
-        request_id, payload.model, is_streaming);
+    info!(
+        "[{}] POST /v1/chat/completions model={} stream={} (ephemeral)",
+        request_id, payload.model, is_streaming
+    );
 
     // Check if streaming is requested
     if is_streaming {
@@ -47,8 +50,14 @@ async fn handle_chat_completion_stream(
     let model = payload.model.clone();
 
     // Create ephemeral session
-    let agent_session = state.session_manager
-        .create_new_session(&request_id.to_string(), &session_id, Some(model.clone()), true)
+    let agent_session = state
+        .session_manager
+        .create_new_session(
+            &request_id.to_string(),
+            &session_id,
+            Some(model.clone()),
+            true,
+        )
         .await
         .map_err(|e| ErrorResponse::internal_error(format!("Failed to create session: {}", e)))?;
 
@@ -78,8 +87,14 @@ async fn handle_chat_completion_non_stream(
     let trace = build_message_trace(&payload);
 
     // Create ephemeral session
-    let agent_session = state.session_manager
-        .create_new_session(&request_id.to_string(), &session_id, Some(payload.model.clone()), true)
+    let agent_session = state
+        .session_manager
+        .create_new_session(
+            &request_id.to_string(),
+            &session_id,
+            Some(payload.model.clone()),
+            true,
+        )
         .await
         .map_err(|e| ErrorResponse::internal_error(format!("Failed to create session: {}", e)))?;
 
@@ -125,10 +140,16 @@ async fn handle_chat_completion_non_stream(
                     AgentEvent::ToolCallStarted { call, .. } => {
                         reasoning_steps.push(format!("[toolcall: {}]", call.tool_name));
                     }
-                    AgentEvent::ToolCallCompleted { call, result: tool_result, .. } => {
+                    AgentEvent::ToolCallCompleted {
+                        call,
+                        result: tool_result,
+                        ..
+                    } => {
                         use shai_core::tools::ToolResult;
                         let step = match &tool_result {
-                            ToolResult::Success { .. } => format!("[tool succeeded: {}]", call.tool_name),
+                            ToolResult::Success { .. } => {
+                                format!("[tool succeeded: {}]", call.tool_name)
+                            }
                             ToolResult::Error { error, .. } => {
                                 let error_oneline = error.lines().next().unwrap_or(error);
                                 format!("[tool failed: {} - {}]", call.tool_name, error_oneline)
@@ -145,7 +166,10 @@ async fn handle_chat_completion_non_stream(
                 }
             }
             Err(e) => {
-                return Err(ErrorResponse::internal_error(format!("Event stream error: {}", e)));
+                return Err(ErrorResponse::internal_error(format!(
+                    "Event stream error: {}",
+                    e
+                )));
             }
         }
     }
@@ -208,16 +232,16 @@ fn build_message_trace(params: &ChatCompletionParameters) -> Vec<ChatMessage> {
             ChatMessage::User { content, name, .. } => {
                 let text = match content {
                     ChatMessageContent::Text(t) => t.clone(),
-                    ChatMessageContent::ContentPart(parts) => {
-                        parts
-                            .iter()
-                            .filter_map(|p| match p {
-                                openai_dive::v1::resources::chat::ChatMessageContentPart::Text(t) => Some(t.text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    }
+                    ChatMessageContent::ContentPart(parts) => parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            openai_dive::v1::resources::chat::ChatMessageContentPart::Text(t) => {
+                                Some(t.text.as_str())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     ChatMessageContent::None => String::new(),
                 };
                 if !text.is_empty() {

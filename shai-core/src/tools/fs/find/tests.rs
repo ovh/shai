@@ -2,9 +2,8 @@ use super::find::FindTool;
 use super::structs::{FindToolParams, FindType};
 use crate::tools::Tool;
 use shai_llm::ToolDescription;
-use tempfile::TempDir;
 use std::fs;
-
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_find_tool_creation() {
@@ -45,7 +44,11 @@ fn main() {
 
     fs::write(temp_path.join("user.rs"), test_content).expect("Failed to write user.rs");
     fs::write(temp_path.join("main.rs"), other_content).expect("Failed to write main.rs");
-    fs::write(temp_path.join("README.md"), "# Test Project\nThis is a test").expect("Failed to write README.md");
+    fs::write(
+        temp_path.join("README.md"),
+        "# Test Project\nThis is a test",
+    )
+    .expect("Failed to write README.md");
 
     let find_tool = FindTool::new();
 
@@ -66,13 +69,22 @@ fn main() {
     let result = find_tool.execute(params, None).await;
     match result {
         crate::tools::ToolResult::Success { output, .. } => {
-            assert!(output.contains("struct User"), "Should find struct User in results");
-            assert!(output.contains("user.rs"), "Should identify user.rs as the file");
-            assert!(output.contains("line_number"), "Should include line numbers");
-        },
+            assert!(
+                output.contains("struct User"),
+                "Should find struct User in results"
+            );
+            assert!(
+                output.contains("user.rs"),
+                "Should identify user.rs as the file"
+            );
+            assert!(
+                output.contains("line_number"),
+                "Should include line numbers"
+            );
+        }
         crate::tools::ToolResult::Error { error, .. } => {
             panic!("Find tool should succeed, got error: {}", error);
-        },
+        }
         crate::tools::ToolResult::Denied => {
             panic!("Find tool was denied");
         }
@@ -96,11 +108,14 @@ fn main() {
     match result {
         crate::tools::ToolResult::Success { output, .. } => {
             assert!(output.contains("email"), "Should find email in results");
-            assert!(output.contains("context_before") || output.contains("context_after"), "Should include context");
-        },
+            assert!(
+                output.contains("context_before") || output.contains("context_after"),
+                "Should include context"
+            );
+        }
         crate::tools::ToolResult::Error { error, .. } => {
             panic!("Find tool should succeed, got error: {}", error);
-        },
+        }
         crate::tools::ToolResult::Denied => {
             panic!("Find tool was denied");
         }
@@ -113,8 +128,10 @@ async fn test_find_tool_filename_search() {
     let temp_path = temp_dir.path();
 
     // Create test files with different names
-    fs::write(temp_path.join("user_model.rs"), "// User model").expect("Failed to write user_model.rs");
-    fs::write(temp_path.join("auth_service.rs"), "// Auth service").expect("Failed to write auth_service.rs");
+    fs::write(temp_path.join("user_model.rs"), "// User model")
+        .expect("Failed to write user_model.rs");
+    fs::write(temp_path.join("auth_service.rs"), "// Auth service")
+        .expect("Failed to write auth_service.rs");
     fs::write(temp_path.join("database.rs"), "// Database").expect("Failed to write database.rs");
     fs::write(temp_path.join("config.toml"), "# Config").expect("Failed to write config.toml");
 
@@ -137,23 +154,33 @@ async fn test_find_tool_filename_search() {
     let result = find_tool.execute(params, None).await;
     match result {
         crate::tools::ToolResult::Success { output, .. } => {
-            assert!(output.contains("user_model.rs"), "Should find user_model.rs");
-            assert!(output.contains("filename"), "Should indicate filename match type");
-            
+            assert!(
+                output.contains("user_model.rs"),
+                "Should find user_model.rs"
+            );
+            assert!(
+                output.contains("filename"),
+                "Should indicate filename match type"
+            );
+
             // Parse JSON to check the results structure
-            let results: Vec<crate::tools::fs::find::SearchResult> = serde_json::from_str(&output).expect("Should parse JSON results");
+            let results: Vec<crate::tools::fs::find::SearchResult> =
+                serde_json::from_str(&output).expect("Should parse JSON results");
             assert!(!results.is_empty(), "Should have results");
-            
+
             // Check that filename matches have None for line_number
             for result in &results {
                 if result.match_type == "filename" {
-                    assert!(result.line_number.is_none(), "Filename matches should not have line numbers");
+                    assert!(
+                        result.line_number.is_none(),
+                        "Filename matches should not have line numbers"
+                    );
                 }
             }
-        },
+        }
         crate::tools::ToolResult::Error { error, .. } => {
             panic!("Find tool should succeed, got error: {}", error);
-        },
+        }
         crate::tools::ToolResult::Denied => {
             panic!("Find tool was denied");
         }
@@ -195,12 +222,18 @@ async fn test_find_tool_with_filters() {
         crate::tools::ToolResult::Success { output, .. } => {
             assert!(output.contains("Library"), "Should find struct Library");
             assert!(output.contains("lib.rs"), "Should find in lib.rs");
-            assert!(!output.contains("target"), "Should exclude target directory");
-            assert!(!output.contains("README.md"), "Should exclude non-.rs files");
-        },
+            assert!(
+                !output.contains("target"),
+                "Should exclude target directory"
+            );
+            assert!(
+                !output.contains("README.md"),
+                "Should exclude non-.rs files"
+            );
+        }
         crate::tools::ToolResult::Error { error, .. } => {
             panic!("Find tool should succeed, got error: {}", error);
-        },
+        }
         crate::tools::ToolResult::Denied => {
             panic!("Find tool was denied");
         }
@@ -224,7 +257,8 @@ fn calculate_guest_score() -> u32 {
     0
 }"#;
 
-    fs::write(temp_path.join("calculator.rs"), code_content).expect("Failed to write calculator.rs");
+    fs::write(temp_path.join("calculator.rs"), code_content)
+        .expect("Failed to write calculator.rs");
 
     let find_tool = FindTool::new();
 
@@ -245,17 +279,29 @@ fn calculate_guest_score() -> u32 {
     let result = find_tool.execute(params, None).await;
     match result {
         crate::tools::ToolResult::Success { output, .. } => {
-            assert!(output.contains("calculate_user_score"), "Should find calculate_user_score");
-            assert!(output.contains("calculate_admin_score"), "Should find calculate_admin_score");
-            assert!(output.contains("calculate_guest_score"), "Should find calculate_guest_score");
-            
+            assert!(
+                output.contains("calculate_user_score"),
+                "Should find calculate_user_score"
+            );
+            assert!(
+                output.contains("calculate_admin_score"),
+                "Should find calculate_admin_score"
+            );
+            assert!(
+                output.contains("calculate_guest_score"),
+                "Should find calculate_guest_score"
+            );
+
             // Should find all 3 functions
             let lines_with_calculate = output.matches("calculate_").count();
-            assert!(lines_with_calculate >= 3, "Should find at least 3 calculate functions");
-        },
+            assert!(
+                lines_with_calculate >= 3,
+                "Should find at least 3 calculate functions"
+            );
+        }
         crate::tools::ToolResult::Error { error, .. } => {
             panic!("Find tool should succeed, got error: {}", error);
-        },
+        }
         crate::tools::ToolResult::Denied => {
             panic!("Find tool was denied");
         }
@@ -289,10 +335,13 @@ async fn test_find_tool_invalid_regex() {
     match result {
         crate::tools::ToolResult::Success { .. } => {
             panic!("Find tool should return error for invalid regex");
-        },
+        }
         crate::tools::ToolResult::Error { error, .. } => {
-            assert!(error.contains("Invalid regex pattern"), "Should indicate regex error");
-        },
+            assert!(
+                error.contains("Invalid regex pattern"),
+                "Should indicate regex error"
+            );
+        }
         crate::tools::ToolResult::Denied => {
             panic!("Find tool was denied");
         }

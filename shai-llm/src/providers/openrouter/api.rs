@@ -67,7 +67,9 @@ impl OpenRouterModel {
 
 impl OpenRouterModelsResponse {
     /// Convert OpenRouter models response to openai_dive ListModelResponse format
-    pub fn to_openai_models_response(&self) -> openai_dive::v1::resources::model::ListModelResponse {
+    pub fn to_openai_models_response(
+        &self,
+    ) -> openai_dive::v1::resources::model::ListModelResponse {
         openai_dive::v1::resources::model::ListModelResponse {
             object: "list".to_string(),
             data: self.data.iter().map(|m| m.to_openai_model()).collect(),

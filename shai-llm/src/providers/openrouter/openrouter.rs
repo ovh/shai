@@ -1,15 +1,15 @@
-use crate::provider::{LlmProvider, LlmError, LlmStream, ProviderInfo, EnvVar};
 use super::api::OpenRouterModelsResponse;
+use crate::provider::{EnvVar, LlmError, LlmProvider, LlmStream, ProviderInfo};
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest;
 use openai_dive::v1::{
     api::Client,
     resources::{
-        chat::{ChatCompletionParameters, ChatCompletionResponse, ChatCompletionChunkResponse},
+        chat::{ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse},
         model::ListModelResponse,
     },
 };
+use reqwest;
 
 const OPENROUTER_API_BASE: &str = "https://openrouter.ai/api/v1";
 
@@ -24,7 +24,7 @@ impl OpenRouterProvider {
     pub fn new(api_key: String) -> Self {
         let mut client = Client::new(api_key.clone());
         client.set_base_url(OPENROUTER_API_BASE);
-        Self { 
+        Self {
             client,
             api_key,
             base_url: OPENROUTER_API_BASE.to_string(),
@@ -35,16 +35,15 @@ impl OpenRouterProvider {
     /// Create OpenRouter provider from environment variables
     /// Returns None if required environment variables are not set
     pub fn from_env() -> Option<Self> {
-        std::env::var("OPENROUTER_API_KEY").ok().map(|api_key| {
-            Self::new(api_key)
-        })
+        std::env::var("OPENROUTER_API_KEY").ok().map(Self::new)
     }
 
     /// Get OpenRouter models using their native API format
     pub async fn openrouter_models(&self) -> Result<OpenRouterModelsResponse, LlmError> {
         let url = format!("{}/models", self.base_url);
-        
-        let response = self.http_client
+
+        let response = self
+            .http_client
             .get(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -54,17 +53,18 @@ impl OpenRouterProvider {
 
         if !response.status().is_success() {
             let status = response.status();
-            let text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("OpenRouter API error {}: {}", status, text)
-            )) as LlmError);
+            let text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(Box::new(std::io::Error::other(format!(
+                "OpenRouter API error {}: {}",
+                status, text
+            ))) as LlmError);
         }
 
-        let openrouter_response: OpenRouterModelsResponse = response
-            .json()
-            .await
-            .map_err(|e| Box::new(e) as LlmError)?;
+        let openrouter_response: OpenRouterModelsResponse =
+            response.json().await.map_err(|e| Box::new(e) as LlmError)?;
 
         Ok(openrouter_response)
     }
@@ -77,34 +77,47 @@ impl LlmProvider for OpenRouterProvider {
         Ok(openrouter_response.to_openai_models_response())
     }
 
-
     async fn default_model(&self) -> Result<String, LlmError> {
-        let models = self.models().await?; 
-    
+        let models = self.models().await?;
+
         let keywords = ["free"];
-        models.data.iter()
-        .find(|m| keywords.iter().any(|kw| m.id.to_lowercase().contains(kw)))
+        models
+            .data
+            .iter()
+            .find(|m| keywords.iter().any(|kw| m.id.to_lowercase().contains(kw)))
             .or_else(|| models.data.first())
             .map(|m| m.id.clone())
             .ok_or_else(|| "no model available".into())
     }
 
-    async fn chat(&self, request: ChatCompletionParameters) -> Result<ChatCompletionResponse, LlmError> {
-        let response = self.client.chat().create(request).await
+    async fn chat(
+        &self,
+        request: ChatCompletionParameters,
+    ) -> Result<ChatCompletionResponse, LlmError> {
+        let response = self
+            .client
+            .chat()
+            .create(request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
         Ok(response)
     }
 
-    async fn chat_stream(&self, mut request: ChatCompletionParameters) -> Result<LlmStream, LlmError> {
+    async fn chat_stream(
+        &self,
+        mut request: ChatCompletionParameters,
+    ) -> Result<LlmStream, LlmError> {
         // Ensure streaming is enabled
         request.stream = Some(true);
-        
-        let stream = self.client.chat().create_stream(request).await
+
+        let stream = self
+            .client
+            .chat()
+            .create_stream(request)
+            .await
             .map_err(|e| Box::new(e) as LlmError)?;
 
-        let converted_stream = stream.map(|result| {
-            result.map_err(|e| Box::new(e) as LlmError)
-        });
+        let converted_stream = stream.map(|result| result.map_err(|e| Box::new(e) as LlmError));
 
         Ok(Box::new(Box::pin(converted_stream)))
     }
@@ -120,16 +133,12 @@ impl LlmProvider for OpenRouterProvider {
     fn name(&self) -> &'static str {
         "openrouter"
     }
-    
+
     fn info() -> ProviderInfo {
         ProviderInfo {
             name: "openrouter",
             display_name: "OpenRouter (Multiple AI Providers)",
-            env_vars: vec![
-                EnvVar::required("OPENROUTER_API_KEY", "OpenRouter API key"),
-            ],
+            env_vars: vec![EnvVar::required("OPENROUTER_API_KEY", "OpenRouter API key")],
         }
     }
-    
 }
-

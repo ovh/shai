@@ -1,0 +1,12 @@
+{
+  "name": "document-brain-implementations",
+  "category": "search",
+  "difficulty": "easy",
+  "setup": "curl -sL https://github.com/ovh/shai/archive/refs/tags/v0.1.10.tar.gz | tar xz -C . && cd shai-0.1.10/shai-core",
+  "goal": "Find all implementations of the Brain trait across the codebase. For each implementation, write its file path and a one-line description of what it does to a file called BRAIN_IMPLS.md at the repository root. Format each entry as '- <file_path>: <description>'.",
+  "prompts": [],
+  "verify": [
+    { "command": "test -f BRAIN_IMPLS.md" },
+    { "command": "grep -q 'Brain' BRAIN_IMPLS.md" }
+  ]
+}

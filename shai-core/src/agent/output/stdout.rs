@@ -1,7 +1,7 @@
-use std::io::{self, Write};
-use async_trait::async_trait;
-use crate::agent::{AgentEvent, AgentEventHandler};
 use super::pretty::PrettyFormatter;
+use crate::agent::{AgentEvent, AgentEventHandler};
+use async_trait::async_trait;
+use std::io::{self, Write};
 
 /// Stdout event manager that formats and prints agent activity in a user-friendly way
 pub struct StdoutEventManager {

@@ -15,3 +15,7 @@
 .claude/
 .shai/
 
+
+# Benchmark output directories
+benchmarks-*/
+shai-harness-*/

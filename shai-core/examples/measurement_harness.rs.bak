@@ -1,0 +1,463 @@
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use shai_core::agent::events::AgentEventHandler;
+use shai_core::agent::{Agent, AgentController, AgentEvent, AgentRequest, AgentResponse, UserResponse};
+use shai_core::runners::coder::coder::coder;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+/// Input script format
+#[derive(Deserialize)]
+struct Script {
+    goal: String,
+    prompts: Vec<String>,
+    /// Optional shell command to set up a fixture directory.
+    /// The harness creates a temp dir in the current working directory,
+    /// runs this command there, then changes CWD to the result.
+    setup: Option<String>,
+}
+
+/// Per-turn metrics
+#[derive(Serialize, Clone, Debug)]
+struct TurnMetrics {
+    turn: usize,
+    prompt: String,
+    input_tokens: u32,
+    output_tokens: u32,
+    cached_tokens: u32,
+    tool_calls: Vec<ToolCallMetrics>,
+    duration_ms: u64,
+}
+
+/// Per-tool-call metrics
+#[derive(Serialize, Clone, Debug)]
+struct ToolCallMetrics {
+    tool_name: String,
+    original_bytes: u64,
+    compacted_bytes: u64,
+    duration_ms: u64,
+}
+
+/// Session summary
+#[derive(Serialize, Debug)]
+struct SessionSummary {
+    total_input: u32,
+    total_output: u32,
+    total_cached: u32,
+    cache_hit_rate: f64,
+    total_tool_calls: usize,
+    total_tool_output_bytes: u64,
+    total_compacted_bytes: u64,
+    compaction_ratio: f64,
+}
+
+/// Full report
+#[derive(Serialize, Debug)]
+struct Report {
+    session_id: String,
+    model: String,
+    goal: String,
+    fixture: Option<String>,
+    turns: Vec<TurnMetrics>,
+    summary: SessionSummary,
+    total_duration_ms: u64,
+}
+
+/// Shared state for metrics collection
+struct MetricsState {
+    current_turn: usize,
+    turns: Vec<TurnMetrics>,
+    turn_start: Option<Instant>,
+    tool_calls: Vec<ToolCallMetrics>,
+    pending_input_tokens: u32,
+    pending_output_tokens: u32,
+    pending_cached_tokens: u32,
+}
+
+/// Event handler that captures metrics from agent events
+struct MetricsHandler {
+    state: Arc<Mutex<MetricsState>>,
+    controller: AgentController,
+}
+
+impl MetricsHandler {
+    fn new(state: Arc<Mutex<MetricsState>>, controller: AgentController) -> Self {
+        Self { state, controller }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentEventHandler for MetricsHandler {
+    async fn handle_event(&self, event: AgentEvent) {
+        match event {
+            AgentEvent::TokenUsage { input_tokens, output_tokens, cached_tokens } => {
+                let mut s = self.state.lock().unwrap();
+                s.pending_input_tokens += input_tokens;
+                s.pending_output_tokens += output_tokens;
+                s.pending_cached_tokens += cached_tokens;
+            }
+            AgentEvent::ToolCallCompleted { duration, call, result, original_bytes, compacted_bytes } => {
+                let _ = result; // result is unused, we track bytes below
+                let mut s = self.state.lock().unwrap();
+                s.tool_calls.push(ToolCallMetrics {
+                    tool_name: call.tool_name,
+                    original_bytes: original_bytes as u64,
+                    compacted_bytes: compacted_bytes as u64,
+                    duration_ms: duration.num_milliseconds() as u64,
+                });
+            }
+            AgentEvent::UserInputRequired { request_id, .. } => {
+                // Auto-cancel user input requests (harness is non-interactive)
+                let _ = self.controller.response_user_query(request_id, UserResponse::Cancel).await;
+            }
+            _ => {
+                eprintln!("⚡ Event: {:?}", event);
+            }
+        }
+    }
+}
+
+fn parse_args() -> (String, bool) {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: measurement_harness [--clean] <script.json>");
+        eprintln!();
+        eprintln!("Options:");
+        eprintln!("  --clean    Remove fixture directory after run (default: keep)");
+        eprintln!();
+        eprintln!("Script format:");
+        eprintln!("  {{");
+        eprintln!("    \"goal\": \"Initial goal/prompt for the agent\",");
+        eprintln!("    \"prompts\": [\"Turn 2 prompt\", \"Turn 3 prompt\", ...],");
+        eprintln!("    \"setup\": \"sh -c 'curl ... | tar xz && cd crate-0.1.0'\"  // optional");
+        eprintln!("  }}");
+        std::process::exit(1);
+    }
+
+    let mut clean = false;
+    let mut script_path = None;
+    for arg in &args[1..] {
+        match arg.as_str() {
+            "--clean" => clean = true,
+            _ => script_path = Some(arg.clone()),
+        }
+    }
+
+    let script_path = script_path.expect("script.json path is required");
+    (script_path, clean)
+}
+
+fn setup_fixture_with_cwd(setup_cmd: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let ts = Utc::now().timestamp();
+    let fixture_dir = PathBuf::from(format!("shai-harness-{}", ts));
+
+    fs::create_dir_all(&fixture_dir)?;
+    eprintln!("░ Fixture: {}", fixture_dir.display());
+
+    // Append `pwd` to capture the final working directory after setup
+    let cmd_with_pwd = format!("{} && pwd", setup_cmd);
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd_with_pwd)
+        .current_dir(&fixture_dir)
+        .output()
+        .map_err(|e| format!("Failed to run setup: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Setup command failed (exit {}):\n{}",
+            output.status.code().map_or("?".to_string(), |c| c.to_string()),
+            stderr
+        ).into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let cwd_str = stdout.trim().to_string();
+
+    // Resolve relative to fixture_dir
+    let working_dir = if cwd_str.starts_with('/') {
+        PathBuf::from(cwd_str)
+    } else {
+        fixture_dir.join(cwd_str)
+    };
+
+    eprintln!("░ Working dir: {}", working_dir.display());
+    Ok(working_dir)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (script_path, clean) = parse_args();
+    let script_content = fs::read_to_string(&script_path)?;
+    let script: Script = serde_json::from_str(&script_content)?;
+
+    let goal = script.goal.clone();
+    let prompts = script.prompts.clone();
+    let setup_cmd = script.setup.clone();
+
+    // Set up fixture if requested
+    let fixture_dir = if let Some(ref cmd) = setup_cmd {
+        Some(setup_fixture_with_cwd(cmd)?)
+    } else {
+        None
+    };
+
+    // Change to fixture working directory if set up
+    if let Some(ref working_dir) = fixture_dir {
+        std::env::set_current_dir(working_dir)
+            .map_err(|e| format!("Failed to change to fixture dir: {}", e))?;
+        eprintln!("░ CWD: {}", std::env::current_dir()?.display());
+    }
+
+    // Initialize git repo for diff tracking
+    if let Some(ref working_dir) = fixture_dir {
+        eprintln!("░ Initializing git repo...");
+        fs::write(
+            working_dir.join(".gitignore"),
+            "runtime.log\nsession.log\ndiff.patch\n"
+        )?;
+
+        let _ = Command::new("git").args(["init"]).current_dir(working_dir).output();
+        let _ = Command::new("git").args(["add", "-A"]).current_dir(working_dir).output();
+
+        let commit = Command::new("git")
+            .args(["-c", "commit.gpgsign=false", "commit", "-m", "baseline", "--allow-empty"])
+            .env("GIT_AUTHOR_NAME", "harness")
+            .env("GIT_AUTHOR_EMAIL", "harness@harness")
+            .env("GIT_COMMITTER_NAME", "harness")
+            .env("GIT_COMMITTER_EMAIL", "harness@harness")
+            .current_dir(working_dir)
+            .output();
+
+        if commit.map_or(false, |c| c.status.success()) {
+            eprintln!("░ Git baseline committed");
+        } else {
+            eprintln!("⚠ Failed to commit git baseline");
+        }
+    }
+
+    // Initialize tracing to runtime.log in the fixture directory
+    {
+        let log_dir = fixture_dir.as_ref()
+            .map(|d| d.as_path())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let log_writer = tracing_appender::rolling::never(log_dir, "runtime.log");
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new(
+                "shai_core=debug,brain::coder=debug,agent=debug,misc=debug"
+            ))
+            .with(tracing_subscriber::fmt::layer()
+                .with_writer(log_writer)
+                .with_ansi(false)
+            )
+            .try_init();
+    }
+
+    let session_start = Instant::now();
+
+    eprintln!("░ Measurement harness");
+    eprintln!("░ Goal: {}", goal);
+    eprintln!("░ Prompts: {}", prompts.len());
+
+    // Get LLM from config
+    let (llm, model) = shai_core::config::config::ShaiConfig::get_llm().await
+        .map_err(|e| format!("Failed to get LLM from config: {}. Run `shai auth` first.", e))?;
+    eprintln!("░ Model: {} ({})", model, llm.provider().name());
+
+    // Shared metrics state — accessible from both the event handler (inside agent)
+    // and the main task (controlling turns).
+    let shared_state = Arc::new(Mutex::new(MetricsState {
+        current_turn: 1,
+        turns: Vec::new(),
+        turn_start: None,
+        tool_calls: Vec::new(),
+        pending_input_tokens: 0,
+        pending_output_tokens: 0,
+        pending_cached_tokens: 0,
+    }));
+
+    // Build agent with metrics handler
+    let fixture_path_str = fixture_dir.as_ref().map(|p| p.to_string_lossy().to_string());
+    let mut agent = coder(Arc::new(llm), model.clone());
+    if let Some(ref dir) = fixture_dir {
+        agent.working_dir = Some(dir.to_string_lossy().to_string());
+    }
+    let mut controller = agent.controller();
+    let handler = MetricsHandler::new(shared_state.clone(), controller.clone());
+    let mut agent = agent.with_event_handler(handler);
+
+    let handle = tokio::spawn(async move {
+        agent.run().await
+    });
+
+    // Enable sudo mode to bypass permission checks
+    match controller.send(AgentRequest::Sudo(Some(true))).await {
+        Ok(AgentResponse::SudoStatus { enabled }) => eprintln!("░ Sudo enabled: {}", enabled),
+        Ok(_) => eprintln!("⚠ Sudo returned unexpected response"),
+        Err(e) => eprintln!("⚠ Failed to enable sudo: {}", e),
+    }
+
+    // Per-turn timeout (120s default, override with HARNESS_TURN_TIMEOUT_MS env var)
+    let turn_timeout_ms: u64 = std::env::var("HARNESS_TURN_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(120_000);
+
+    // Turn control helpers on shared state
+    let state_start = shared_state.clone();
+    let start_turn = || {
+        let mut s = state_start.lock().unwrap();
+        s.turn_start = Some(Instant::now());
+    };
+
+    let state_flush = shared_state.clone();
+    let flush_turn = |prompt: String| {
+        let mut s = state_flush.lock().unwrap();
+        let start = s.turn_start.take();
+        let tool_calls = std::mem::take(&mut s.tool_calls);
+        let input_tokens = std::mem::take(&mut s.pending_input_tokens);
+        let output_tokens = std::mem::take(&mut s.pending_output_tokens);
+        let cached_tokens = std::mem::take(&mut s.pending_cached_tokens);
+        let turn = s.current_turn;
+        let duration_ms = start.map(|inst| inst.elapsed().as_millis() as u64).unwrap_or(0);
+        s.turns.push(TurnMetrics {
+            turn,
+            prompt,
+            input_tokens,
+            output_tokens,
+            cached_tokens,
+            tool_calls,
+            duration_ms,
+        });
+        s.current_turn += 1;
+    };
+
+    // Send initial goal
+    start_turn();
+    eprintln!("\n> [Turn 0] {}", goal);
+    let _ = controller.send_user_input(goal.clone()).await;
+    match controller.wait_turn(Some(turn_timeout_ms)).await {
+        Ok(()) => {},
+        Err(e) => eprintln!("⚠ Turn 0 timed out: {}", e),
+    }
+    flush_turn(goal.clone());
+
+    // Send follow-up prompts
+    for (i, prompt) in prompts.iter().enumerate() {
+        start_turn();
+        eprintln!("> [Turn {}] {}", i + 1, prompt);
+        let _ = controller.send_user_input(prompt.clone()).await;
+        match controller.wait_turn(Some(turn_timeout_ms)).await {
+            Ok(()) => {},
+            Err(e) => eprintln!("⚠ Turn {} timed out: {}", i + 1, e),
+        }
+        flush_turn(prompt.clone());
+    }
+
+    // Drop controller to let agent complete
+    let _ = controller.drop().await;
+    let _ = handle.await??;
+
+    let total_duration_ms = session_start.elapsed().as_millis() as u64;
+
+    // Build report
+    let turns = shared_state.lock().unwrap().turns.clone();
+
+    let total_input: u32 = turns.iter().map(|t| t.input_tokens).sum();
+    let total_output: u32 = turns.iter().map(|t| t.output_tokens).sum();
+    let total_cached: u32 = turns.iter().map(|t| t.cached_tokens).sum();
+    let total_tool_calls: usize = turns.iter().map(|t| t.tool_calls.len()).sum();
+    let total_tool_output_bytes: u64 = turns.iter().map(|t| t.tool_calls.iter().map(|tc| tc.original_bytes).sum::<u64>()).sum();
+    let total_compacted_bytes: u64 = turns.iter().map(|t| t.tool_calls.iter().map(|tc| tc.compacted_bytes).sum::<u64>()).sum();
+    let cache_hit_rate = if total_input > 0 {
+        total_cached as f64 / total_input as f64
+    } else {
+        0.0
+    };
+    let compaction_ratio = if total_tool_output_bytes > 0 {
+        total_compacted_bytes as f64 / total_tool_output_bytes as f64
+    } else {
+        1.0
+    };
+
+    let fixture_path = fixture_dir.as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+
+    let report = Report {
+        session_id: format!("session-{}", Utc::now().timestamp()),
+        model,
+        goal,
+        fixture: fixture_path,
+        turns,
+        summary: SessionSummary {
+            total_input,
+            total_output,
+            total_cached,
+            cache_hit_rate,
+            total_tool_calls,
+            total_tool_output_bytes,
+            total_compacted_bytes,
+            compaction_ratio,
+        },
+        total_duration_ms,
+    };
+
+    let json = serde_json::to_string_pretty(&report)?;
+    println!("{}", json);
+
+    eprintln!("\n░ Session complete");
+    eprintln!("░ Total input tokens:  {} ({} cached, {:.1}% hit rate)", total_input, total_cached, cache_hit_rate * 100.0);
+    eprintln!("░ Total output tokens: {}", total_output);
+    eprintln!("░ Total tool calls: {} ({} bytes → {} compacted, {:.1}% reduction)", total_tool_calls, total_tool_output_bytes, total_compacted_bytes, (1.0 - compaction_ratio) * 100.0);
+    eprintln!("░ Duration: {:.1}s", total_duration_ms as f64 / 1000.0);
+
+    // Generate diff and session log
+    if let Some(ref working_dir) = fixture_dir {
+        let diff_output = Command::new("git")
+            .args(["diff"])
+            .current_dir(working_dir)
+            .output();
+
+        if let Ok(diff) = diff_output {
+            fs::write(working_dir.join("diff.patch"), &diff.stdout)?;
+            eprintln!("░ Diff written to diff.patch ({} bytes)", diff.stdout.len());
+        }
+
+        let session_log = format!(
+            "Session: {}\nModel: {}\nGoal: {}\n\nTotal input tokens:  {} ({} cached, {:.1}% hit rate)\nTotal output tokens: {}\nTotal tool calls: {} ({} bytes → {} compacted, {:.1}% reduction)\nDuration: {:.1}s\n\n--- JSON Report ---\n{}",
+            report.session_id,
+            report.model,
+            report.goal,
+            total_input,
+            total_cached,
+            cache_hit_rate * 100.0,
+            total_output,
+            total_tool_calls,
+            total_tool_output_bytes,
+            total_compacted_bytes,
+            (1.0 - compaction_ratio) * 100.0,
+            total_duration_ms as f64 / 1000.0,
+            json,
+        );
+        fs::write(working_dir.join("session.log"), &session_log)?;
+        eprintln!("░ Session log written to session.log");
+    }
+
+    if let Some(ref dir) = fixture_dir {
+        if clean {
+            eprintln!("░ Cleaning fixture: {}", dir.display());
+            let _ = fs::remove_dir_all(dir);
+        } else {
+            eprintln!("░ Fixture kept: {}", dir.display());
+        }
+    }
+
+    Ok(())
+}

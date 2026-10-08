@@ -1,13 +1,16 @@
-use std::path::PathBuf;
-use std::fmt;
-use tracing_subscriber::{
-    EnvFilter, fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt,
-    fmt::{format::Writer, FormatEvent, FormatFields},
-    registry::LookupSpan,
-};
-use tracing_appender::rolling::{RollingFileAppender, Rotation};
-use tracing::{Event, Subscriber};
 use chrono;
+use std::fmt;
+use std::path::PathBuf;
+use tracing::{Event, Subscriber};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{
+    fmt::format::FmtSpan,
+    fmt::{format::Writer, FormatEvent, FormatFields},
+    layer::SubscriberExt,
+    registry::LookupSpan,
+    util::SubscriberInitExt,
+    EnvFilter,
+};
 
 /// Custom formatter that colors different event types
 struct ColoredFormatter;
@@ -24,16 +27,16 @@ where
         event: &Event<'_>,
     ) -> fmt::Result {
         let metadata = event.metadata();
-        
+
         // Target colors (different from log level colors)
         let (target_color, message_color) = if metadata.target() == "agent::command" {
             ("\x1b[38;5;213m", "") // Bright pink for commands, normal message
         } else if metadata.target() == "agent::internal_event" {
-            ("\x1b[38;5;51m", "")  // Bright cyan for internal events, normal message
+            ("\x1b[38;5;51m", "") // Bright cyan for internal events, normal message
         } else if metadata.target() == "agent::public_event" {
             ("\x1b[38;5;226m", "") // Bright yellow for public events, normal message
         } else if metadata.target() == "agent::status" {
-            ("\x1b[38;5;82m", "")  // Bright lime green for status changes, normal message
+            ("\x1b[38;5;82m", "") // Bright lime green for status changes, normal message
         } else if metadata.target() == "misc" {
             ("\x1b[38;5;208m", "") // Bright orange for misc debugging, normal message
         } else if metadata.target() == "brain::coder" {
@@ -41,7 +44,7 @@ where
         } else {
             ("\x1b[2m", "\x1b[2m") // Dim for both target and message for other logs
         };
-        
+
         // Level colors (standard tracing colors)
         let level_color = match *metadata.level() {
             tracing::Level::ERROR => "\x1b[31m", // Red
@@ -50,15 +53,19 @@ where
             tracing::Level::DEBUG => "\x1b[34m", // Blue
             tracing::Level::TRACE => "\x1b[35m", // Purple
         };
-        
+
         // Format: [timestamp] [colored_level] [colored_target] colored_or_dim_message
-        write!(writer, "{} ", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ"))?;
+        write!(
+            writer,
+            "{} ",
+            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        )?;
         write!(writer, "{}{:5}\x1b[0m ", level_color, metadata.level())?;
         write!(writer, "{}[{}]\x1b[0m ", target_color, metadata.target())?;
         write!(writer, "{}", message_color)?;
         ctx.format_fields(writer.by_ref(), event)?;
-        write!(writer, "\x1b[0m\n")?;
-        
+        writeln!(writer, "\x1b[0m")?;
+
         Ok(())
     }
 }
@@ -93,8 +100,12 @@ impl LoggingConfig {
         Self {
             level: std::env::var("SHAI_LOG_LEVEL").unwrap_or_else(|_| "off".to_string()),
             file_path: std::env::var("SHAI_LOG_FILE").ok().map(PathBuf::from),
-            include_spans: std::env::var("SHAI_LOG_SPANS").map(|v| v == "true").unwrap_or(false),
-            json_format: std::env::var("SHAI_LOG_JSON").map(|v| v == "true").unwrap_or(false),
+            include_spans: std::env::var("SHAI_LOG_SPANS")
+                .map(|v| v == "true")
+                .unwrap_or(false),
+            json_format: std::env::var("SHAI_LOG_JSON")
+                .map(|v| v == "true")
+                .unwrap_or(false),
         }
     }
 
@@ -137,7 +148,7 @@ impl LoggingConfig {
             .add_directive(format!("agent::status={}", self.level).parse()?)
             .add_directive(format!("agent::loop={}", self.level).parse()?)
             .add_directive(format!("misc={}", self.level).parse()?);
-        
+
         let span_events = if self.include_spans {
             FmtSpan::NEW | FmtSpan::CLOSE
         } else {
@@ -146,18 +157,21 @@ impl LoggingConfig {
 
         match self.file_path {
             Some(path) => {
-                let file_appender = RollingFileAppender::new(Rotation::DAILY, 
-                    path.parent().unwrap_or_else(|| std::path::Path::new(".")), 
-                    path.file_name().unwrap_or_else(|| std::ffi::OsStr::new("agent.log"))
+                let file_appender = RollingFileAppender::new(
+                    Rotation::DAILY,
+                    path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+                    path.file_name()
+                        .unwrap_or_else(|| std::ffi::OsStr::new("agent.log")),
                 );
-                
+
                 if self.json_format {
                     tracing_subscriber::registry()
                         .with(filter)
-                        .with(tracing_subscriber::fmt::layer()
-                            .json()
-                            .with_writer(file_appender)
-                            .with_span_events(span_events)
+                        .with(
+                            tracing_subscriber::fmt::layer()
+                                .json()
+                                .with_writer(file_appender)
+                                .with_span_events(span_events),
                         )
                         .try_init()
                         .map_err(|_| "Failed to initialize subscriber (already set)")?;
@@ -165,10 +179,11 @@ impl LoggingConfig {
                     // File output without colors (colors don't work well in files)
                     tracing_subscriber::registry()
                         .with(filter)
-                        .with(tracing_subscriber::fmt::layer()
-                            .with_writer(file_appender)
-                            .with_span_events(span_events)
-                            .with_ansi(false)
+                        .with(
+                            tracing_subscriber::fmt::layer()
+                                .with_writer(file_appender)
+                                .with_span_events(span_events)
+                                .with_ansi(false),
                         )
                         .try_init()
                         .map_err(|_| "Failed to initialize subscriber (already set)")?;
@@ -178,9 +193,10 @@ impl LoggingConfig {
                 if self.json_format {
                     tracing_subscriber::registry()
                         .with(filter)
-                        .with(tracing_subscriber::fmt::layer()
-                            .json()
-                            .with_span_events(span_events)
+                        .with(
+                            tracing_subscriber::fmt::layer()
+                                .json()
+                                .with_span_events(span_events),
                         )
                         .try_init()
                         .map_err(|_| "Failed to initialize subscriber (already set)")?;
@@ -188,9 +204,10 @@ impl LoggingConfig {
                     // Console output with custom colors
                     tracing_subscriber::registry()
                         .with(filter)
-                        .with(tracing_subscriber::fmt::layer()
-                            .event_format(ColoredFormatter)
-                            .with_ansi(true)
+                        .with(
+                            tracing_subscriber::fmt::layer()
+                                .event_format(ColoredFormatter)
+                                .with_ansi(true),
                         )
                         .try_init()
                         .map_err(|_| "Failed to initialize subscriber (already set)")?;

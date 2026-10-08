@@ -1,26 +1,32 @@
 use std::time::Duration;
 
 use ansi_to_tui::IntoText;
-use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
     symbols::border,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListDirection, ListItem, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Widget},
-    Frame
+    widgets::{
+        Block, Borders, List, ListDirection, ListItem, Padding, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Widget,
+    },
+    Frame,
 };
-use shai_core::{agent::{events::PermissionRequest, output::PrettyFormatter, PermissionResponse}, tools::{ToolCall, ToolResult}};
-// Removed tui_textarea dependency for colored preview
+use shai_core::{
+    agent::{events::PermissionRequest, output::PrettyFormatter, PermissionResponse},
+    tools::{ToolCall, ToolResult},
+};
+// Removed ratatui_textarea dependency for colored preview
 
-use super::theme::{SHAI_YELLOW, ThemePalette};
+use super::theme::ThemePalette;
 
 pub enum PermissionModalAction {
     Nope,
     Response {
         request_id: String,
-        choice: PermissionResponse
-    }
+        choice: PermissionResponse,
+    },
 }
 
 #[derive(Clone)]
@@ -30,7 +36,6 @@ pub struct PermissionWidget<'a> {
     pub remaining_perms: usize,
 
     selected_index: usize,
-    formatted_request: String,
     preview_text: Text<'a>,
     scroll_offset: usize,
     scroll_state: ScrollbarState,
@@ -38,10 +43,17 @@ pub struct PermissionWidget<'a> {
 }
 
 impl PermissionWidget<'_> {
-    pub fn new(request_id: String, request: PermissionRequest, total: usize, palette: ThemePalette) -> Self {
+    pub fn new(
+        request_id: String,
+        request: PermissionRequest,
+        total: usize,
+        palette: ThemePalette,
+    ) -> Self {
         let formatter = PrettyFormatter::new();
         let formatted_request = formatter.format_toolcall(&request.call, request.preview.as_ref());
-        let preview_text = formatted_request.into_text().unwrap();
+        let preview_text = formatted_request
+            .into_text()
+            .unwrap_or_else(|_| Text::from(formatted_request.clone()));
         let content_length = preview_text.lines.len();
 
         Self {
@@ -49,7 +61,6 @@ impl PermissionWidget<'_> {
             request,
             selected_index: 0,
             remaining_perms: total,
-            formatted_request,
             preview_text,
             scroll_offset: 0,
             scroll_state: ScrollbarState::new(content_length),
@@ -57,9 +68,12 @@ impl PermissionWidget<'_> {
         }
     }
 
-
     pub fn move_up(&mut self) {
-        self.selected_index = if self.selected_index == 0 { 2 } else { self.selected_index - 1 };
+        self.selected_index = if self.selected_index == 0 {
+            2
+        } else {
+            self.selected_index - 1
+        };
     }
 
     pub fn move_down(&mut self) {
@@ -88,21 +102,7 @@ impl PermissionWidget<'_> {
         }
     }
 
-    pub async fn handle_mouse_event(&mut self, mouse_event: MouseEvent) ->  PermissionModalAction {
-        // Handle mouse scroll in the preview area
-        match mouse_event.kind {
-            crossterm::event::MouseEventKind::ScrollUp => {
-                self.scroll_up();
-            }
-            crossterm::event::MouseEventKind::ScrollDown => {
-                self.scroll_down();
-            }
-            _ => {}
-        }
-        PermissionModalAction::Nope
-    }
-
-    pub async fn handle_key_event(&mut self, key_event: KeyEvent) ->  PermissionModalAction {
+    pub fn handle_key_event(&mut self, key_event: KeyEvent) -> PermissionModalAction {
         match key_event.code {
             KeyCode::Up => {
                 self.move_up();
@@ -136,12 +136,12 @@ impl PermissionWidget<'_> {
                 let choice = PermissionResponse::Deny;
                 PermissionModalAction::Response { request_id, choice }
             }
-            _ => PermissionModalAction::Nope
+            _ => PermissionModalAction::Nope,
         }
     }
 
     pub fn height(&self) -> u16 {
-       4 // outer permission block 2 + 1 top padding
+        4 // outer permission block 2 + 1 top padding
        + 2 // inner tool preview block 2 (0 padding)
        + self.preview_text.lines.len() as u16  // preview content
        + 4 // allow, yolo, deny + 1 top space
@@ -151,44 +151,63 @@ impl PermissionWidget<'_> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .padding(Padding{left: 1, right: 1, top: 1, bottom: 1})
+            .padding(Padding {
+                left: 1,
+                right: 1,
+                top: 1,
+                bottom: 1,
+            })
             .border_style(Style::default().fg(self.palette.status))
             .title(if self.remaining_perms > 1 {
                 format!(" 🔐 Permission Required ({}/{}) ", 1, self.remaining_perms)
             } else {
-                format!(" 🔐 Permission Required ")
-            });    
+                " 🔐 Permission Required ".to_string()
+            });
 
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let [tool, modal] = Layout::vertical([Constraint::Length(self.preview_text.lines.len() as u16 + 2), Constraint::Length(4)]).areas(inner);
+        let [tool, modal] = Layout::vertical([
+            Constraint::Length(self.preview_text.lines.len() as u16 + 2),
+            Constraint::Length(4),
+        ])
+        .areas(inner);
 
         let call = self.request.call.clone();
         let tool_name = PrettyFormatter::capitalize_first(&call.tool_name);
         let context = PrettyFormatter::extract_primary_param(&call.parameters, &call.tool_name);
         let mut title = Line::from(vec![
             Span::styled("🔧 ", self.palette.input_text),
-            Span::styled(tool_name, Style::default().fg(self.palette.input_text).bold())
+            Span::styled(
+                tool_name,
+                Style::default().fg(self.palette.input_text).bold(),
+            ),
         ]);
-        if let Some((_,ctx)) = context {
-            title.push_span(Span::styled(format!("({})", ctx), Style::default().fg(self.palette.input_text)));
+        if let Some((_, ctx)) = context {
+            title.push_span(Span::styled(
+                format!("({})", ctx),
+                Style::default().fg(self.palette.input_text),
+            ));
         };
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .padding(Padding{left: 1, right: 1, top: 0, bottom: 0})
-            .title(title)
-            .title_style(Style::default().fg(self.palette.input_text))
-            .border_style(Style::default().fg(self.palette.border));        
-    
+            .padding(Padding {
+                left: 1,
+                right: 1,
+                top: 0,
+                bottom: 0,
+            })
+            .title(title.fg(self.palette.input_text))
+            .border_style(Style::default().fg(self.palette.border));
+
         let inner = block.inner(tool);
         f.render_widget(block, tool);
 
         // Render scrollable paragraph with colors
-        let paragraph = Paragraph::new(self.preview_text.clone())
-            .scroll((self.scroll_offset as u16, 0));
+        let paragraph =
+            Paragraph::new(self.preview_text.clone()).scroll((self.scroll_offset as u16, 0));
         f.render_widget(paragraph, inner);
 
         // Render scrollbar if content is longer than area
@@ -198,18 +217,18 @@ impl PermissionWidget<'_> {
             f.render_stateful_widget(scrollbar, inner, &mut self.scroll_state.clone());
         }
 
-        let items = ["Allow", "Allow all tools and don't ask again for this session", "Deny"];
+        let items = ["Allow", "Use auto mode", "Deny"];
         let mut lines = vec![Line::from("Do you want to run this tool?")];
-        for (i,s) in items.into_iter().enumerate() {
+        for (i, s) in items.into_iter().enumerate() {
             if i == self.selected_index {
                 lines.push(Line::from(vec![
                     Span::styled("❯ ", self.palette.suggestion_selected_fg),
-                    Span::styled(s,    self.palette.suggestion_selected_fg)
+                    Span::styled(s, self.palette.suggestion_selected_fg),
                 ]));
             } else {
                 lines.push(Line::from(vec![
                     Span::styled("  ", self.palette.placeholder),
-                    Span::styled(s,    self.palette.placeholder)
+                    Span::styled(s, self.palette.placeholder),
                 ]));
             };
         }

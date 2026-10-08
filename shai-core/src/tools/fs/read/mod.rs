@@ -1,8 +1,8 @@
-pub mod structs;
 pub mod read;
+pub mod structs;
+
+pub use read::ReadTool;
+pub use structs::{ReadFileSpec, ReadToolParams};
 
 #[cfg(test)]
 mod tests;
-
-pub use structs::ReadToolParams;
-pub use read::ReadTool;

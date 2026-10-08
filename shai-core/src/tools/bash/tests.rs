@@ -1,9 +1,9 @@
-use super::structs::BashToolParams;
 use super::bash::BashTool;
+use super::structs::BashToolParams;
 use crate::tools::{Tool, ToolCapability};
+use serde_json::json;
 use shai_llm::ToolDescription;
 use std::collections::HashMap;
-use serde_json::json;
 
 #[test]
 fn test_bash_tool_permissions() {
@@ -31,7 +31,7 @@ async fn test_bash_tool_execution() {
         working_dir: None,
         env: HashMap::new(),
     };
-    
+
     let result = Tool::execute(&tool, params, None).await;
     assert!(result.is_success());
     if let crate::tools::types::ToolResult::Success { output, metadata } = result {

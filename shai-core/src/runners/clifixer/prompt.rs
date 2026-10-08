@@ -1,5 +1,6 @@
-use crate::runners::coder::env::{get_os_version, get_platform, get_today, get_working_dir, is_git_repo, env_all_key};
-
+use crate::runners::coder::env::{
+    env_all_key, get_os_version, get_platform, get_today, get_working_dir, is_git_repo,
+};
 
 static CLIFIX_GOAL: &str = r#"
 You are SHAI's CLI error recovery assistant. When a user's command fails, you analyze the error and provide a corrected command.
@@ -47,7 +48,6 @@ Environment variables:
 </env>
 "#;
 
-
 pub fn clifix_prompt() -> String {
     let working_dir = get_working_dir();
     let os = get_os_version();
@@ -57,11 +57,11 @@ pub fn clifix_prompt() -> String {
     let env = env_all_key();
 
     CLIFIX_GOAL
-    .replace("{working_dir}", &working_dir)
-    .replace("{is_git_repo}", &git_repo.to_string())
-    .replace("{platform}", &platform)
-    .replace("{os_version}", &os)
-    .replace("{today}", &today)
-    .replace("{env}", &env)
-    .to_string()
+        .replace("{working_dir}", &working_dir)
+        .replace("{is_git_repo}", &git_repo.to_string())
+        .replace("{platform}", &platform)
+        .replace("{os_version}", &os)
+        .replace("{today}", &today)
+        .replace("{env}", &env)
+        .to_string()
 }

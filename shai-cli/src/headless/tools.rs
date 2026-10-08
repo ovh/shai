@@ -1,7 +1,5 @@
+use shai_core::tools::{self, AnyTool};
 use std::sync::Arc;
-use shai_core::tools::{AnyTool, BashTool, EditTool, FetchTool, FindTool, LsTool, 
-                     MultiEditTool, ReadTool, TodoReadTool, TodoWriteTool, WriteTool,
-                     TodoStorage, FsOperationLog};
 
 /// Available tools for the coder agent
 #[derive(Debug, Clone, PartialEq)]
@@ -11,27 +9,20 @@ pub enum ToolName {
     Fetch,
     Find,
     Ls,
-    MultiEdit,
     Read,
     TodoRead,
     TodoWrite,
     Write,
+    Skills,
 }
 
 impl ToolName {
     pub fn all() -> Vec<ToolName> {
-        vec![
-            ToolName::Bash,
-            ToolName::Edit,
-            ToolName::Fetch,
-            ToolName::Find,
-            ToolName::Ls,
-            ToolName::MultiEdit,
-            ToolName::Read,
-            ToolName::TodoRead,
-            ToolName::TodoWrite,
-            ToolName::Write,
-        ]
+        let mut all = Vec::new();
+        for name in tools::TOOL_NAMES {
+            all.push(ToolName::from_str(name).expect("unknown tool name in TOOL_NAMES"));
+        }
+        all
     }
 
     pub fn name(&self) -> &'static str {
@@ -41,26 +32,26 @@ impl ToolName {
             ToolName::Fetch => "fetch",
             ToolName::Find => "find",
             ToolName::Ls => "ls",
-            ToolName::MultiEdit => "multiedit",
             ToolName::Read => "read",
-            ToolName::TodoRead => "todoread",
-            ToolName::TodoWrite => "todowrite",
+            ToolName::TodoRead => "todo_read",
+            ToolName::TodoWrite => "todo_write",
             ToolName::Write => "write",
+            ToolName::Skills => "skills",
         }
     }
 
     pub fn from_str(s: &str) -> Option<ToolName> {
-        match s.to_lowercase().as_str() {
+        match s {
             "bash" => Some(ToolName::Bash),
             "edit" => Some(ToolName::Edit),
             "fetch" => Some(ToolName::Fetch),
             "find" => Some(ToolName::Find),
             "ls" => Some(ToolName::Ls),
-            "multiedit" => Some(ToolName::MultiEdit),
             "read" => Some(ToolName::Read),
-            "todoread" => Some(ToolName::TodoRead),
-            "todowrite" => Some(ToolName::TodoWrite),
+            "todo_read" => Some(ToolName::TodoRead),
+            "todo_write" => Some(ToolName::TodoWrite),
             "write" => Some(ToolName::Write),
+            "skills" => Some(ToolName::Skills),
             _ => None,
         }
     }
@@ -90,10 +81,6 @@ impl ToolConfig {
         Self::default()
     }
 
-    pub fn with_tools(tools: Vec<ToolName>) -> Self {
-        Self { tools }
-    }
-
     pub fn remove_tools(mut self, tools_to_remove: Vec<ToolName>) -> Self {
         self.tools.retain(|tool| !tools_to_remove.contains(tool));
         self
@@ -108,37 +95,28 @@ impl ToolConfig {
         self
     }
 
-    pub fn list_tools(&self) -> Vec<String> {
-        self.tools.iter().map(|t| t.name().to_string()).collect()
-    }
-
     pub fn build_toolbox(&self) -> Vec<Box<dyn AnyTool>> {
-        let todo_storage = Arc::new(TodoStorage::new());
-        let fs_log = Arc::new(FsOperationLog::new());
+        let todo_storage = Arc::new(tools::TodoStorage::new());
+        let fs_log = Arc::new(tools::FsOperationLog::new());
         let mut toolbox: Vec<Box<dyn AnyTool>> = Vec::new();
         for tool_name in &self.tools {
-            match tool_name {
-                ToolName::Bash => toolbox.push(Box::new(BashTool::new())),
-                ToolName::Edit => toolbox.push(Box::new(EditTool::new(fs_log.clone()))),
-                ToolName::Fetch => toolbox.push(Box::new(FetchTool::new())),
-                ToolName::Find => toolbox.push(Box::new(FindTool::new())),
-                ToolName::Ls => toolbox.push(Box::new(LsTool::new())),
-                ToolName::MultiEdit => toolbox.push(Box::new(MultiEditTool::new(fs_log.clone()))),
-                ToolName::Read => toolbox.push(Box::new(ReadTool::new(fs_log.clone()))),
-                ToolName::TodoRead => toolbox.push(Box::new(TodoReadTool::new(todo_storage.clone()))),
-                ToolName::TodoWrite => toolbox.push(Box::new(TodoWriteTool::new(todo_storage.clone()))),
-                ToolName::Write => toolbox.push(Box::new(WriteTool::new(fs_log.clone()))),
+            if let Some(tool) = tools::create_tool(
+                tool_name.name(),
+                fs_log.clone(),
+                todo_storage.clone(),
+                &[],
+            ) {
+                toolbox.push(tool);
             }
         }
         toolbox
     }
 }
 
-
 pub fn list_all_tools() {
     eprintln!("Available tools:");
-    for tool in ToolName::all() {
-        eprintln!("  {}", tool.name());
+    for name in tools::TOOL_NAMES {
+        eprintln!("  {}", name);
     }
 }
 

@@ -1,121 +1,131 @@
-use std::io::{self, stdin, stdout};
-use std::sync::Arc;
-use std::time::Instant;
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::collapsible_match)]
+use std::io::{self, Write};
 
-use chrono::Utc;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use crossterm::terminal::{self, disable_raw_mode, enable_raw_mode};
-use crossterm::{execute, cursor, ExecutableCommand};
-use futures::{future::FutureExt, select, StreamExt};
-use ratatui::layout::Rect;
+use crossterm::execute;
+use crossterm::terminal::{self, disable_raw_mode};
+use futures::StreamExt;
 use ratatui::prelude::CrosstermBackend;
-use ratatui::style::Stylize;
-use ratatui::text::{Line, Span, Text};
 use ratatui::Terminal;
-use shai_core::agent::{Agent, AgentRequest, AgentEvent, AgentController, PublicAgentState};
-use shai_core::agent::events::{PermissionRequest, PermissionResponse};
-use shai_core::agent::output::PrettyFormatter;
-use shai_core::config::config::ShaiConfig;
-use shai_core::config::agent::AgentConfig;
-use shai_core::agent::builder::AgentBuilder;
-use shai_core::logging::LoggingConfig;
+use ratatui::{TerminalOptions, Viewport};
+use shai_core::agent::{AgentController, AgentEvent, PublicAgentState};
 use shai_core::runners::coder::coder::coder;
-use shai_core::tools::{ToolCall, ToolResult};
-use shai_llm::{LlmClient, ToolCallMethod};
-use ratatui::{
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    widgets::{Paragraph, Widget},
-    Frame, TerminalOptions, Viewport
-};
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, Duration};
-use tui_textarea::Input;
-use ansi_to_tui::IntoText;
-use std::collections::{HashMap, VecDeque};
+use tracing::{debug, warn};
 
-use crate::tui::input::InputArea;
-use super::input::UserAction;
-use crate::tui::perm::PermissionWidget;
-use crate::tui::perm_alt_screen::AlternateScreenPermissionModal;
-use super::perm::PermissionModalAction;
+use super::agent_meta::AgentMeta;
+use super::agent_state::AgentState;
+
+use super::handler::AgentHandler;
+use super::input::InputArea;
+use super::renderer::RenderManager;
+use super::session_picker::SessionPicker;
+use super::shortcuts::Shortcuts;
+use super::statusbar::StatusBar;
 use super::theme::Theme;
-
-
-pub enum AppModalState<'a> {
-    InputShown,
-    PermissionModal {
-        widget: PermissionWidget<'a>   
-    }
-}
+use super::ui_state::UiState;
 
 pub struct AppRunningAgent {
-    pub(crate) handle:     JoinHandle<()>,
-    pub(crate) events:     broadcast::Receiver<AgentEvent>,
+    pub(crate) handle: JoinHandle<()>,
+    pub(crate) events: broadcast::Receiver<AgentEvent>,
     pub(crate) controller: AgentController,
+    pub(crate) tools: Vec<(String, String)>,
+}
+
+pub enum InitialModal {
+    None,
+    AgentPicker,
+    SessionPicker,
 }
 
 pub struct App<'a> {
     pub(crate) terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
-    pub(crate) terminal_height: u16,
-
     pub(crate) agent: Option<AppRunningAgent>,
-    pub(crate) custom_agent: Option<Box<dyn Agent>>,
-
-    pub(crate) state: AppModalState<'a>,
-    pub(crate) formatter: PrettyFormatter, // streaming log formatter
-    pub(crate) running_tools: HashMap<String, ToolCall>, // (request_id, request)
-    pub(crate) input: InputArea<'a>,       // input text
-    pub(crate) commands: HashMap<(String, String),Vec<String>>,
-    pub(crate) exit: bool,
-    pub(crate) permission_queue: VecDeque<(String, PermissionRequest)>, // (request_id, request)
-
-    pub(crate) total_input_tokens: u32,
-    pub(crate) total_output_tokens: u32,
-    
-    pub(crate) theme: Theme, // UI theme (dark/light)
+    pub(crate) agent_state: AgentState,
+    pub(crate) agent_meta: AgentMeta,
+    pub(crate) ui_state: UiState<'a>,
+    pub(crate) renderer: RenderManager,
+    pub(crate) input: InputArea<'a>,
+    pub(crate) shortcuts: Shortcuts,
+    pub(crate) status_bar: StatusBar,
+    pub(crate) initial_modal: InitialModal,
+    pub(crate) initial_prompt: Option<String>,
 }
 
-
-// Agent-related Internals
 impl App<'_> {
-    pub async fn start_agent(&mut self, agent_name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-        let mut agent: Box<dyn Agent> = if let Some(agent_name) = agent_name {
-            // Load custom agent config
-            let config = AgentConfig::load(agent_name)?;
-            
-            println!("\x1b[2m░ agent {} - {} on {}\x1b[0m", agent_name, config.llm_provider.model, config.llm_provider.provider);
-            
-            // Create agent from config
+    pub async fn start_agent(
+        &mut self,
+        agent_name: Option<&str>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        use shai_core::agent::builder::AgentBuilder;
+        use shai_core::config::agent::AgentConfig;
+        use shai_core::config::config::ShaiConfig;
+
+        let mut agent: Box<dyn shai_core::agent::Agent> = if let Some(name) = agent_name {
+            let config = AgentConfig::load(name)?;
+            self.agent_meta.set_model(config.llm_provider.model.clone());
+            self.agent_meta
+                .set_provider(config.llm_provider.provider.clone());
+            self.agent_meta.set_name(Some(name.to_string()));
             let agent_builder = AgentBuilder::from_config(config).await?;
+            self.agent_state
+                .mcp_manager_mut()
+                .set_servers(agent_builder.mcp_status.clone());
             Box::new(agent_builder.build())
         } else {
-            // Use default coder agent
             let (llm, model) = ShaiConfig::get_llm().await?;
-            println!("\x1b[2m░ {} on {}\x1b[0m", model, llm.provider().name());
-            
+            self.agent_meta.set_model(model.clone());
+            self.agent_meta
+                .set_provider(llm.provider().name().to_string());
+            self.agent_meta.set_name(None);
             Box::new(coder(Arc::new(llm), model))
         };
-        
-        // Get Agent I/O
+
+        let banner = if let Some(name) = agent_name {
+            format!(
+                "\x1b[2m░ agent {} - {} on {}\x1b[0m",
+                name,
+                self.agent_meta.model(),
+                self.agent_meta.provider()
+            )
+        } else {
+            format!(
+                "\x1b[2m░ {} on {}\x1b[0m",
+                self.agent_meta.model(),
+                self.agent_meta.provider()
+            )
+        };
+
         let controller = agent.controller();
         let events = agent.watch();
-
-        // Run the agent in background
         let handle = tokio::spawn(async move {
             match agent.run().await {
-                Ok(result) => eprintln!("Agent completed: {:?}", result),
-                Err(error) => eprintln!("Agent failed: {:?}", error),
+                Ok(result) => debug!(target: "agent::loop", "Agent completed: {:?}", result),
+                Err(error) => warn!(target: "agent::loop", "Agent failed: {}", error),
             }
         });
 
-        self.agent = Some(AppRunningAgent{
+        self.agent = Some(AppRunningAgent {
             handle,
-            controller,
-            events
+            controller: controller.clone(),
+            events,
+            tools: Vec::new(),
         });
-        Ok(())
+
+        let saved_prompts = shai_core::tools::prompts::load_active_prompts_from_disk();
+        if !saved_prompts.is_empty() {
+            let _ = controller.set_active_prompts(saved_prompts).await;
+        }
+
+        self.status_bar.set_model(self.agent_meta.model());
+        self.status_bar.set_provider(self.agent_meta.provider());
+        self.refresh_status_bar();
+
+        Ok(banner)
     }
 
     async fn receive_agent_event(&mut self) -> Option<AgentEvent> {
@@ -126,78 +136,206 @@ impl App<'_> {
         }
     }
 
-    async fn handle_agent_event(&mut self, event: AgentEvent) -> io::Result<()> {
-        // Update agent state
-        if let AgentEvent::StatusChanged { new_status, .. } = &event {
-            self.input.set_agent_running(!matches!(new_status, PublicAgentState::Paused));
+    pub(crate) fn render_restored_trace(
+        &mut self,
+        trace: &[openai_dive::v1::resources::chat::ChatMessage],
+    ) {
+        use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
+
+        for message in trace {
+            let formatted = match message {
+                ChatMessage::User { content, .. } => match content {
+                    ChatMessageContent::Text(text) => self
+                        .renderer
+                        .formatter()
+                        .format_event(&AgentEvent::UserInput {
+                            input: text.clone(),
+                        }),
+                    _ => None,
+                },
+                ChatMessage::Assistant { content, .. } => {
+                    if let Some(ChatMessageContent::Text(text)) = content {
+                        if text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(format!("\n\u{25cf} {}", text))
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(text) = formatted {
+                self.renderer.history_mut().add_text(&text);
+            }
+        }
+    }
+
+    pub(crate) async fn restore_session(&mut self, session_id: &str) -> io::Result<()> {
+        use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
+
+        let session =
+            shai_core::session::SessionPersist::load_session(session_id).map_err(|e| {
+                io::Error::other(format!("Failed to load session {}: {}", session_id, e))
+            })?;
+
+        self.agent_state
+            .session_manager_mut()
+            .set_session_id(&session.session_id);
+
+        if let Some(ref agent) = self.agent {
+            let _ = agent.controller.load_trace(session.trace.clone()).await;
         }
 
-        // updated inprogress list
-        if let AgentEvent::ToolCallStarted { call, .. }= &event {
-            self.running_tools.insert(call.tool_call_id.clone(), call.clone());
-        }
-        if let AgentEvent::ToolCallCompleted { call, .. }= &event {
-            self.running_tools.remove(&call.tool_call_id);
+        let user_inputs: Vec<String> = session
+            .trace
+            .iter()
+            .filter_map(|msg| match msg {
+                ChatMessage::User {
+                    content: ChatMessageContent::Text(text),
+                    ..
+                } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        self.input.set_history(user_inputs);
+
+        self.render_restored_trace(&session.trace);
+        self.renderer.history_mut().scroll_to_bottom();
+        self.refresh_status_bar();
+        Ok(())
+    }
+
+    pub async fn swap_agent(
+        &mut self,
+        agent_name: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let trace = if let Some(ref agent) = self.agent {
+            agent.controller.get_trace().await.ok()
+        } else {
+            None
+        };
+
+        if let Some(agent) = self.agent.take() {
+            let _ = agent.controller.terminate().await;
+            let _ = agent.handle.await;
         }
 
-        // Format and display event
-        if let Some(formatted) = self.formatter.format_event(&event) {
-            if let Some(ref mut terminal) = self.terminal {
-                let wrapped = formatted.into_text().unwrap();
-                let line_count = wrapped.lines.iter().len() as u16;
-                terminal.clear()?; // this is to avoid visual artifact
-                terminal.insert_before(line_count, |buf| {
-                    wrapped.render(buf.area, buf);
-                })?;
+        self.start_agent(agent_name).await?;
+
+        if let Some(trace) = trace {
+            if let Some(ref agent) = self.agent {
+                let _ = agent.controller.load_trace(trace).await;
             }
         }
 
-        // Handle permission requests - just add to queue
-        if let AgentEvent::PermissionRequired { request_id, request } = &event {
-            self.permission_queue.push_back((request_id.clone(), request.clone()));
-        }
-
-        // Handle token usage tracking
-        if let AgentEvent::TokenUsage { input_tokens, output_tokens } = &event {
-            self.total_input_tokens += input_tokens;
-            self.total_output_tokens += output_tokens;
-        }
-        
         Ok(())
     }
-}
 
+    async fn handle_agent_event(&mut self, event: AgentEvent) -> io::Result<()> {
+        self.agent_state.handle_event(&event).await;
+        self.renderer.handle_event(&event).await;
+
+        if let AgentEvent::StatusChanged { new_status, .. } = &event {
+            self.input
+                .set_agent_running(!matches!(new_status, PublicAgentState::Paused));
+            self.status_bar
+                .set_agent_mode(&self.input.agent_mode().status_bar_str());
+            if matches!(new_status, PublicAgentState::Paused) {
+                if let Some(ref agent_ref) = self.agent {
+                    if let Ok(trace) = agent_ref.controller.get_trace().await {
+                        let sid = self.agent_state.session_manager().session_id().to_string();
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                shai_core::session::SessionPersist::save_session(&sid, trace)
+                            {
+                                tracing::warn!("Failed to save session {}: {}", sid, e);
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        if let AgentEvent::TokenUsage { .. } = &event {
+            self.status_bar.set_tokens(
+                self.agent_state.token_counter().input_tokens(),
+                self.agent_state.token_counter().output_tokens(),
+            );
+        }
+
+        self.refresh_status_bar();
+        Ok(())
+    }
+
+    fn refresh_status_bar(&mut self) {
+        if let Ok(cwd) = std::env::current_dir() {
+            self.status_bar
+                .set_location(&cwd.to_string_lossy().to_string());
+        }
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+        {
+            if output.status.success() {
+                let branch = String::from_utf8_lossy(&output.stdout);
+                self.status_bar.set_git_branch(branch.trim());
+            }
+        }
+        self.status_bar
+            .set_tool_call_method(self.input.tool_call_method_str());
+    }
+}
 
 // UI-related Internals
 impl App<'_> {
     pub fn new() -> Self {
-        let theme = Theme::from_env(); // Read from SHAI_TUI_THEME env var
+        let theme = Theme::from_env();
         let palette = theme.palette();
-        
+        let shortcuts = Shortcuts::load();
+        let mut input = InputArea::new(palette);
+        input.set_shortcuts(
+            shortcuts.cancel_task().clone(),
+            shortcuts.clear_input().clone(),
+            shortcuts.paste().clone(),
+        );
+
         Self {
             terminal: None,
-            terminal_height: 5,
             agent: None,
-            custom_agent: None,
-            formatter: PrettyFormatter::new(),
-            state: AppModalState::InputShown,
-            input: InputArea::new(palette),
-            commands: Self::list_command(),
-            exit: false,
-            running_tools: HashMap::new(),
-            permission_queue: VecDeque::new(),
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            theme,
+            agent_state: AgentState::new(),
+            agent_meta: AgentMeta::new(),
+            ui_state: UiState::new(),
+            renderer: RenderManager::new(),
+            input,
+            shortcuts,
+            status_bar: StatusBar::new(theme),
+            initial_modal: InitialModal::None,
+            initial_prompt: None,
         }
     }
 
-    pub async fn run(&mut self, agent_name: Option<String>) -> io::Result<()> {
-        let x = self.try_run(agent_name).await;
+    pub fn notify(&mut self, msg: &str, duration: std::time::Duration) {
+        self.status_bar.set_notification(msg, duration);
+    }
+
+    pub async fn run(
+        &mut self,
+        agent_name: Option<String>,
+        restore_session_id: Option<String>,
+    ) -> io::Result<()> {
+        let x = self.try_run(agent_name, restore_session_id).await;
+
+        let _ = execute!(
+            std::io::stdout(),
+            crossterm::event::DisableMouseCapture,
+            crossterm::event::PopKeyboardEnhancementFlags,
+        );
+        std::io::stdout().flush().ok();
         let _ = disable_raw_mode();
 
         if let Err(e) = x {
-            // Simply print a newline to move cursor to next line and beginning
             println!();
             eprintln!("{}\r\n", e);
         }
@@ -207,238 +345,96 @@ impl App<'_> {
         Ok(())
     }
 
-    async fn try_run(&mut self, agent_name: Option<String>) ->Result<(), Box<dyn std::error::Error>> {
-        // Start the agent (custom or default)
+    async fn try_run(
+        &mut self,
+        agent_name: Option<String>,
+        restore_session_id: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let agent_name_ref = agent_name.as_deref();
-        self.start_agent(agent_name_ref).await.map_err(|e| -> Box<dyn std::error::Error> { 
-            if agent_name_ref.is_some() {
-                format!("could not start custom agent '{}': {}", agent_name_ref.unwrap(), e).into()
-            } else {
-                format!("could not start shai agent, run shai auth first").into()
-            }
-        })?;
-        
-        // create terminal
+        let banner =
+            self.start_agent(agent_name_ref)
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    if let Some(name) = agent_name_ref {
+                        format!("could not start custom agent '{}': {}", name, e).into()
+                    } else {
+                        "could not start shai agent, run shai auth first"
+                            .to_string()
+                            .into()
+                    }
+                })?;
+
         self.terminal = Some(ratatui::init_with_options(TerminalOptions {
-            viewport: Viewport::Inline(8)
+            viewport: Viewport::Fullscreen,
         }));
 
-        // Create a timer for animation updates
+        execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+
+        if let Some(ref mut terminal) = self.terminal {
+            terminal.clear()?;
+        }
+
+        if !banner.is_empty() {
+            self.renderer.history_mut().add_text(&banner);
+        }
+
+        std::io::stdout().flush().ok();
+
+        if let Some(session_id) = restore_session_id {
+            self.restore_session(&session_id).await?;
+        }
+
+        // Show initial modal if requested
+        match self.initial_modal {
+            InitialModal::AgentPicker => {
+                self.ui_state.agent_picker =
+                    Some(super::agent_picker::AgentPicker::new(self.status_bar.palette()));
+            }
+            InitialModal::SessionPicker => {
+                let sessions =
+                    shai_core::session::SessionPersist::list_sessions().unwrap_or_default();
+                self.ui_state.session_picker =
+                    Some(SessionPicker::new(sessions, self.status_bar.palette()));
+            }
+            InitialModal::None => {}
+        }
+
+        // Send initial prompt if provided (interactive mode)
+        if let Some(prompt) = self.initial_prompt.take() {
+            if let Some(ref agent) = self.agent {
+                let _ = agent.controller.send_user_input(prompt).await;
+            }
+        }
+
         let mut animation_timer = interval(Duration::from_millis(100));
         let mut reader = crossterm::event::EventStream::new();
 
-        while !self.exit {
-            // Always draw the UI first
-            self.draw_ui().map_err(|_| -> Box<dyn std::error::Error> { 
-                format!("oops... (x_x)'").into() })?;
+        while !self.ui_state.exit {
+            self.draw_ui()
+                .map_err(|_| -> Box<dyn std::error::Error> { "oops... (x_x)'".into() })?;
 
             tokio::select! {
-                // Handle agent events (only when not in permission modal)
                 agent_event = self.receive_agent_event(), if self.agent.is_some() => {
                     if let Some(event) = agent_event {
                         self.handle_agent_event(event).await?;
                     }
                 }
-                
-                // Handle keyboard input
+
                 crossterm_event = reader.next() => {
                     if let Some(Ok(event)) = crossterm_event {
                         self.handle_crossterm_event(event).await?;
                     }
                 }
-                
-                // Handle animation timer (fires when animating OR when checking for pending enter)
+
                 _ = animation_timer.tick() => {
-                    // Check for pending enter timeout
                     if let Some(action) = self.input.check_pending_enter() {
                         self.handle_user_action(action).await?;
                     }
-                    // Timer ticked, UI will be redrawn in next iteration
                 }
             }
-            
-            // Check permission queue and update state
+
             self.check_permission_queue().await?;
         }
         Ok(())
     }
-
-    async fn handle_crossterm_event(&mut self, event: Event) -> io::Result<()> {
-        match event {
-            Event::Resize( .. ) => {
-                if let Some(ref mut terminal) = self.terminal {
-                    terminal.clear()?;
-                }
-            }
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event).await?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn handle_key_event(&mut self, key_event: KeyEvent) -> io::Result<()> {
-        if (matches!(key_event.code, KeyCode::Char('c')) && key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)) || (matches!(key_event.code, KeyCode::Char('d')) && key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)) {
-            self.exit = true;
-            return Ok(());
-        }
-
-        // Handle theme toggle with Ctrl+T
-        if matches!(key_event.code, KeyCode::Char('t')) && key_event.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-            self.theme.toggle();
-            let new_palette = self.theme.palette();
-            self.input.set_palette(new_palette);
-            return Ok(());
-        }
-
-        match &mut self.state {
-            AppModalState::InputShown => {
-                let action = self.input.handle_event(key_event).await;
-                self.handle_user_action(action).await?;
-            },
-            AppModalState::PermissionModal { widget  } => {
-                let action = widget.handle_key_event(key_event).await;
-                self.handle_permission_action(action).await?;
-            }
-        }
-        Ok(())
-    }
-
-
-    async fn handle_permission_action(&mut self, action: PermissionModalAction) -> io::Result<()> {
-        match action {
-            PermissionModalAction::Response { request_id, choice } => {
-                // Send response to agent
-                if let Some(ref agent) = self.agent {     
-                    if matches!(choice, PermissionResponse::AllowAlways) {
-                        let _ = agent.controller.sudo().await;
-                    }        
-                    match agent.controller.response_permission_request(request_id, choice).await {
-                        Err(e) => {
-                            self.input.alert_msg("channel with agent closed. Please restart the app", Duration::from_secs(3));
-                        },
-                        _ => {},
-                    }
-                }
-                
-                // Remove the completed permission from queue
-                self.permission_queue.pop_front();
-                
-                // Go back to InputShown so next check_permission_queue will show next permission
-                self.state = AppModalState::InputShown;
-            }
-            PermissionModalAction::Nope => {}
-        }
-        Ok(())
-    }
-
-    async fn check_permission_queue(&mut self) -> io::Result<()> {
-        match &self.state {
-            AppModalState::InputShown if !self.permission_queue.is_empty() => {
-                let (request_id, request) = self.permission_queue.front().unwrap();
-                let palette = self.theme.palette();
-                let widget = PermissionWidget::new(
-                    request_id.clone(), 
-                    request.clone(), 
-                    self.permission_queue.len(),
-                    palette
-                );
-                
-                let terminal_height = self.terminal.as_ref()
-                    .and_then(|t| t.size().ok())
-                    .map(|s| s.height)
-                    .unwrap_or(24);
-                
-                if widget.height() > terminal_height.saturating_sub(5) {
-                    // Use alternate screen for large modals
-                    if let Ok(mut modal) = AlternateScreenPermissionModal::new(&widget, palette) {
-                        let action = modal.run().await.unwrap_or(PermissionModalAction::Nope);
-                        self.handle_permission_action(action).await?;
-                    }
-                } else {
-                    // Use inline modal for small modals
-                    self.state = AppModalState::PermissionModal { widget };
-                }
-            }
-            AppModalState::PermissionModal { .. } if self.permission_queue.is_empty() => {
-                self.state = AppModalState::InputShown;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn handle_user_action(&mut self, action: UserAction) -> io::Result<()> {
-        match action {
-            UserAction::Nope => {}
-            UserAction::CancelTask => {
-                if let Some(ref agent) = self.agent {
-                    let _ = agent.controller.stop_current_task().await;
-                    self.input.alert_msg("Task cancelled", Duration::from_secs(1));
-                }
-            }
-            UserAction::UserInput { input } => {
-                if let Some(ref agent) = self.agent {                                
-                    match agent.controller.send_user_input(input.clone()).await {
-                        Err(e) => {
-                            self.input.alert_msg("channel with agent closed. Please restart the app", Duration::from_secs(3));
-                        },
-                        _ => {},
-                    }
-                }
-            }
-            UserAction::UserAppCommand { command } => {
-                let _ = self.handle_app_command(&command).await;
-            }
-        }
-        Ok(())
-    }
-
-
-    fn draw_ui(&mut self) -> io::Result<()> {
-        let modal_height = match &self.state {
-            AppModalState::InputShown => self.input.height(),
-            AppModalState::PermissionModal { widget } => widget.height(),
-        }.max(5);
-        let height = modal_height
-        + 1 
-        + self.running_tools.len() as u16;
-
-        if let Some(ref mut terminal) = self.terminal {  
-            if height != self.terminal_height {
-                terminal.set_viewport_height(height + 1)?;
-                self.terminal_height = height;
-            }
-
-            terminal.draw(|frame| {                    
-                let [_, inprogress, modal] = Layout::vertical([
-                    Constraint::Length(1), // padding
-                    Constraint::Length(self.running_tools.len() as u16 + 1), // running tool (if any)
-                    Constraint::Length(modal_height)])                // input or modal
-                    .areas(frame.area()); 
-
-                // draw running tool
-                if !self.running_tools.is_empty() {
-                    let layout: std::rc::Rc<[Rect]> = Layout::vertical(vec![Constraint::Length(1); self.running_tools.len()+1]).split(inprogress);
-                    for ((_,tc), &area) in self.running_tools.iter().zip(layout.into_iter()) {
-                        frame.render_widget(self.formatter.format_tool_running(tc).into_text().unwrap(), area);
-                    }
-                }
-
-                // draw modal
-                match &self.state {
-                    AppModalState::InputShown => {
-                        self.input.draw(frame, modal)
-                    },
-                    AppModalState::PermissionModal { widget } => {
-                        widget.draw(frame, modal)
-                    }
-                }
-            })?;
-        }
-        Ok(())
-    }
-
 }
-

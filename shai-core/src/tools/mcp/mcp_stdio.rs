@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use rmcp::{
     model::CallToolRequestParam,
-    service::{ServiceExt, RunningService},
+    service::{RunningService, ServiceExt},
     transport::TokioChildProcess,
     RoleClient,
 };
 use std::borrow::Cow;
 use tokio::process::Command;
 
-use crate::tools::{ToolResult, ToolCall};
 use super::mcp::{McpClient, McpToolDescription};
+use crate::tools::{ToolCall, ToolResult};
 
 pub struct StdioClient {
     command: String,
@@ -34,7 +34,7 @@ impl McpClient for StdioClient {
         if self.service.is_some() {
             return Ok(());
         }
-        
+
         let mut cmd = Command::new(&self.command);
         for arg in &self.args {
             cmd.arg(arg);
@@ -52,10 +52,12 @@ impl McpClient for StdioClient {
         Ok(())
     }
 
-    async fn list_tools(&self) -> Result<Vec<McpToolDescription>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_tools(
+        &self,
+    ) -> Result<Vec<McpToolDescription>, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
         let tools_result = service.list_tools(Default::default()).await?;
-        
+
         let tool_descriptions = tools_result
             .tools
             .into_iter()
@@ -65,13 +67,16 @@ impl McpClient for StdioClient {
                 parameters_schema: serde_json::Value::Object((*tool.input_schema).clone()),
             })
             .collect();
-        
+
         Ok(tool_descriptions)
     }
 
-    async fn execute_tool(&self, tool_call: ToolCall) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
+    async fn execute_tool(
+        &self,
+        tool_call: ToolCall,
+    ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
-        
+
         let result = service
             .call_tool(CallToolRequestParam {
                 name: Cow::Owned(tool_call.tool_name.clone()),
@@ -84,9 +89,13 @@ impl McpClient for StdioClient {
             .into_iter()
             .map(|c| match c.raw {
                 rmcp::model::RawContent::Text(text_content) => text_content.text,
-                rmcp::model::RawContent::Image(image_data) => format!("[Image: {} bytes]", image_data.data.len()),
-                rmcp::model::RawContent::Resource(_) => format!("[Resource]"),
-                rmcp::model::RawContent::Audio(audio_data) => format!("[Audio: {} bytes]", audio_data.data.len()),
+                rmcp::model::RawContent::Image(image_data) => {
+                    format!("[Image: {} bytes]", image_data.data.len())
+                }
+                rmcp::model::RawContent::Resource(_) => "[Resource]".to_string(),
+                rmcp::model::RawContent::Audio(audio_data) => {
+                    format!("[Audio: {} bytes]", audio_data.data.len())
+                }
             })
             .collect::<Vec<_>>()
             .join("\n");

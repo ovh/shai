@@ -1,11 +1,13 @@
 /// Blatant COPY / PASTE from openai_dive to add hooks for json manipulation
-/// 
+///
 // Flexible chat client with JSON manipulation hooks
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use openai_dive::v1::{
     error::APIError,
-    resources::chat::{ChatCompletionParameters, ChatCompletionResponse, ChatCompletionChunkResponse},
+    resources::chat::{
+        ChatCompletionChunkResponse, ChatCompletionParameters, ChatCompletionResponse,
+    },
 };
 use reqwest::{Method, RequestBuilder};
 use reqwest_eventsource::{Event, EventSource, RequestBuilderExt};
@@ -21,12 +23,12 @@ pub trait JsonHooks: Send + Sync {
     async fn before_send(&self, json: Value) -> Result<Value, APIError> {
         Ok(json) // Default: no modification
     }
-    
+
     /// Called after receiving JSON from the API (non-streaming)
     async fn after_receive(&self, json: Value) -> Result<Value, APIError> {
         Ok(json) // Default: no modification
     }
-    
+
     /// Called after receiving JSON from the API (streaming chunks)
     async fn after_receive_stream(&self, json: Value) -> Result<Value, APIError> {
         // Default: use the same logic as after_receive
@@ -101,7 +103,7 @@ impl ChatClient {
                 } else {
                     let status = response.status();
                     let error_text = response.text().await.unwrap_or_default();
-                    
+
                     match status.as_u16() {
                         400 => Err(APIError::InvalidRequestError(error_text)),
                         401 => Err(APIError::AuthenticationError(error_text)),
@@ -125,8 +127,8 @@ impl ChatClient {
         hooks: &H,
     ) -> Result<ChatCompletionResponse, APIError> {
         // Serialize to JSON and apply before_send hook
-        let mut json = serde_json::to_value(parameters)
-            .map_err(|e| APIError::ParseError(e.to_string()))?;
+        let mut json =
+            serde_json::to_value(parameters).map_err(|e| APIError::ParseError(e.to_string()))?;
         json = hooks.before_send(json).await?;
 
         // Send request
@@ -146,7 +148,7 @@ impl ChatClient {
 
         let mut response_json: Value = serde_json::from_str(&response_text)
             .map_err(|e| APIError::ParseError(e.to_string()))?;
-        
+
         response_json = hooks.after_receive(response_json).await?;
 
         // Deserialize the modified JSON
@@ -161,10 +163,13 @@ impl ChatClient {
         &self,
         parameters: &ChatCompletionParameters,
         hooks: H,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatCompletionChunkResponse, APIError>> + Send>>, APIError> {
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<ChatCompletionChunkResponse, APIError>> + Send>>,
+        APIError,
+    > {
         // Serialize to JSON and apply before_send hook
-        let mut json = serde_json::to_value(parameters)
-            .map_err(|e| APIError::ParseError(e.to_string()))?;
+        let mut json =
+            serde_json::to_value(parameters).map_err(|e| APIError::ParseError(e.to_string()))?;
         json = hooks.before_send(json).await?;
 
         // Create event source for streaming

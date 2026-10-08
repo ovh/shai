@@ -1,7 +1,6 @@
-use super::structs::WriteToolParams;
 use super::super::{FsOperationLog, FsOperationType};
-use crate::tools::{ToolResult, tool};
-//use crate::tools::highlight::highlight_content;
+use super::structs::{WriteFileSpec, WriteToolParams};
+use crate::tools::{tool, ToolResult};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
@@ -18,82 +17,115 @@ impl WriteTool {
         Self { operation_log }
     }
 
-    fn perform_write(&self, params: &WriteToolParams) -> Result<String, String> {
+    fn perform_write(&self, params: &WriteFileSpec) -> Result<String, String> {
         let path = Path::new(&params.path);
 
-        // Check if file exists before writing
         let file_existed = path.exists();
 
-        // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             if !parent.exists() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
 
-        // Write content to file (overwrites if exists)
         fs::write(path, &params.content).map_err(|e| e.to_string())?;
 
         let action = if file_existed { "updated" } else { "created" };
-        
-        Ok(format!("Successfully {} file '{}' with {} bytes", 
-                  action, params.path, params.content.len()))
+
+        Ok(format!(
+            "Successfully {} file '{}' with {} bytes",
+            action,
+            params.path,
+            params.content.len()
+        ))
     }
 }
 
-#[tool(name = "write", description = r#"Creates a new file with specified content or completely overwrites an existing file. This tool should be used with caution.
+#[tool(name = "write", description = r#"Creates new files or completely overwrites existing files with specified content.
 
-**Guidelines**
+**Guidelines:**
 - To overwrite an existing file, you must first have read it with the `read` tool. This is a safety measure to ensure you are aware of the content being replaced.
-- This tool is primarily for creating new files when explicitly instructed. For modifying existing files, the `edit` or `multiedit` tools are the correct choice.
-- Do not create files proactively, especially documentation. Only create files when the user's request cannot be fulfilled by modifying existing ones."#, capabilities = [ToolCapability::Write])]
+- This tool is primarily for creating new files when explicitly instructed. For modifying existing files, use the `edit` tool.
+- Do not create files proactively, especially documentation. Only create files when the user's request cannot be fulfilled by modifying existing ones.
+
+**Examples:**
+Create a new file:
+```json
+{"files": [{"path": "src/new_module.rs", "content": "pub fn hello() {\n    println!(\"hello\");\n"}]}
+```
+Write multiple files:
+```json
+{"files": [{"path": "src/mod.rs", "content": "pub mod foo;"}, {"path": "src/foo.rs", "content": "// TODO"}]}
+```
+"#, capabilities = [Write])]
 impl WriteTool {
-
     async fn execute_preview(&self, params: WriteToolParams) -> Option<ToolResult> {
-        //let highlighted_content = highlight_content(&params.content, &params.path);
+        let mut outputs = Vec::new();
+        let mut meta = HashMap::new();
+        meta.insert("file_count".to_string(), json!(params.files.len()));
 
-        let mut metadata = HashMap::new();
-        metadata.insert("path".to_string(), json!(params.path));
-        metadata.insert("content_length".to_string(), json!(params.content.len()));
-        metadata.insert("line_count".to_string(), json!(params.content.lines().count()));
-        metadata.insert("operation".to_string(), json!("write_preview"));
+        for file_spec in &params.files {
+            outputs.push(format!("=== {} ===\n{}", file_spec.path, file_spec.content));
+        }
 
         Some(ToolResult::Success {
-            output: params.content,
-            metadata: Some(metadata),
+            output: outputs.join("\n\n"),
+            metadata: Some(meta),
         })
     }
 
     async fn execute(&self, params: WriteToolParams) -> ToolResult {
-        match self.perform_write(&params) {
-            Ok(message) => {
-                // Log the write operation
-                self.operation_log.log_operation(FsOperationType::Write, params.path.clone()).await;
+        if params.files.is_empty() {
+            return ToolResult::error("At least one file is required".to_string());
+        }
 
-                let output = format!("{}\n{}", message, params.content);
-                let mut meta = HashMap::new();
-                meta.insert("path".to_string(), json!(params.path));
-                meta.insert("content_length".to_string(), json!(params.content.len()));
-                meta.insert("operation".to_string(), json!("write"));
-
-                // Add file size information
-                if let Ok(metadata) = std::fs::metadata(&params.path) {
-                    meta.insert("file_size_bytes".to_string(), json!(metadata.len()));
+        // Validate that existing files have been read first
+        for file_spec in &params.files {
+            if Path::new(&file_spec.path).exists() {
+                if let Err(err) = self
+                    .operation_log
+                    .validate_edit_permission(&file_spec.path)
+                    .await
+                {
+                    return ToolResult::error(err);
                 }
-
-                // Add line count information
-                let line_count = params.content.lines().count();
-                meta.insert("line_count".to_string(), json!(line_count));
-
-                ToolResult::Success {
-                    output,
-                    metadata: Some(meta),
-                }
-            },
-            Err(e) => {
-                ToolResult::error(format!("Write failed: {}", e))
             }
+        }
+
+        let mut outputs = Vec::new();
+        let mut meta = HashMap::new();
+        let mut file_details: Vec<serde_json::Value> = Vec::new();
+
+        for file_spec in &params.files {
+            match self.perform_write(file_spec) {
+                Ok(message) => {
+                    self.operation_log
+                        .log_operation(FsOperationType::Write, file_spec.path.clone())
+                        .await;
+
+                    let detail = json!({
+                        "path": file_spec.path,
+                        "content_length": file_spec.content.len(),
+                        "line_count": file_spec.content.lines().count(),
+                    });
+                    file_details.push(detail);
+                    outputs.push(format!("{}: {}", file_spec.path, message));
+                }
+                Err(e) => {
+                    return ToolResult::error(format!(
+                        "Write failed for '{}': {}",
+                        file_spec.path, e
+                    ));
+                }
+            }
+        }
+
+        meta.insert("file_count".to_string(), json!(params.files.len()));
+        meta.insert("files".to_string(), json!(file_details));
+
+        ToolResult::Success {
+            output: outputs.join("\n"),
+            metadata: Some(meta),
         }
     }
 }
-

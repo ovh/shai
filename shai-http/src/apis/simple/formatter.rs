@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use shai_core::agent::AgentEvent;
 use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
+use shai_core::agent::AgentEvent;
 use std::collections::HashMap;
 
 use super::types::{MultiModalStreamingResponse, ToolCall, ToolCallResult};
@@ -21,11 +21,7 @@ impl SimpleFormatter {
 impl EventFormatter for SimpleFormatter {
     type Output = MultiModalStreamingResponse;
 
-    async fn format_event(
-        &mut self,
-        event: AgentEvent,
-        session_id: &str,
-    ) -> Option<Self::Output> {
+    async fn format_event(&mut self, event: AgentEvent, session_id: &str) -> Option<Self::Output> {
         match event {
             AgentEvent::BrainResult { thought, .. } => {
                 match thought {

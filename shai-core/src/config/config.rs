@@ -1,19 +1,19 @@
-use std::{collections::HashMap, path::PathBuf};
+use crate::tools::mcp::McpConfig;
+use json_comments::StripComments;
+use reqwest::Url;
+use serde::{Deserialize, Serialize};
+use shai_llm::{LlmClient, ToolCallMethod};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use reqwest::Url;
-use json_comments::StripComments;
-use serde::{Serialize, Deserialize};
-use shai_llm::{LlmClient, ToolCallMethod};
-use crate::tools::mcp::McpConfig;
+use std::{collections::HashMap, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub provider: String,
     pub env_vars: std::collections::HashMap<String, String>,
     pub model: String,
-    pub tool_method: ToolCallMethod
+    pub tool_method: ToolCallMethod,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,23 +32,33 @@ impl ShaiConfig {
         Ok(config)
     }
 
-    pub fn add_provider(&mut self, provider: String, env_vars: std::collections::HashMap<String, String>, model: String) -> usize {
+    pub fn add_provider(
+        &mut self,
+        provider: String,
+        env_vars: std::collections::HashMap<String, String>,
+        model: String,
+    ) -> usize {
         let provider_config = ProviderConfig {
             provider,
             env_vars,
             model,
-            tool_method: ToolCallMethod::FunctionCall
+            tool_method: ToolCallMethod::FunctionCall,
         };
-        
+
         self.providers.push(provider_config);
         self.providers.len() - 1
     }
 
-    pub fn is_duplicate_config(&self, provider_name: &str, env_vars: &std::collections::HashMap<String, String>, model: &str) -> bool {
+    pub fn is_duplicate_config(
+        &self,
+        provider_name: &str,
+        env_vars: &std::collections::HashMap<String, String>,
+        model: &str,
+    ) -> bool {
         self.providers.iter().any(|provider_config| {
-            provider_config.provider == provider_name &&
-            provider_config.env_vars == *env_vars &&
-            provider_config.model.eq(model)
+            provider_config.provider == provider_name
+                && provider_config.env_vars == *env_vars
+                && provider_config.model.eq(model)
         })
     }
 
@@ -65,7 +75,11 @@ impl ShaiConfig {
             self.selected_provider = index;
             Ok(())
         } else {
-            Err(format!("Provider index {} out of bounds (have {} providers)", index, self.providers.len()))
+            Err(format!(
+                "Provider index {} out of bounds (have {} providers)",
+                index,
+                self.providers.len()
+            ))
         }
     }
 
@@ -77,39 +91,61 @@ impl ShaiConfig {
                     .map(|home| home.join(".config"))
                     .ok_or("Could not find home directory")
             })?;
-        
+
         let shai_config_dir = config_dir.join("shai");
         std::fs::create_dir_all(&shai_config_dir)?;
-        
-        Ok(shai_config_dir.join("auth.config"))
+
+        Ok(shai_config_dir.join("auth.config.json"))
+    }
+
+    fn legacy_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let config_dir = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| {
+                dirs::home_dir()
+                    .map(|home| home.join(".config"))
+                    .ok_or("Could not find home directory")
+            })?;
+
+        Ok(config_dir.join("shai").join("auth.config"))
     }
 
     pub fn load() -> Result<ShaiConfig, Box<dyn std::error::Error>> {
         let config_path = Self::config_path()?;
-        
-        if !config_path.exists() {
-            return Err("config file does not exist".into());
+
+        if config_path.exists() {
+            let content_bytes = fs::read(config_path)?;
+            let content_stripped = StripComments::new(&content_bytes[..]);
+            let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
+            Self::validate_provider(&mut config);
+            return Ok(config);
         }
 
-        let content_bytes = fs::read(config_path)?;
-        let content_stripped = StripComments::new(&content_bytes[..]);
-        let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
-
-        // Validate selected_provider index
-        if config.providers.is_empty() {
-            config.selected_provider = 0;
-        } else if config.selected_provider >= config.providers.len() {
-            config.selected_provider = 0; // Reset to first provider if index is invalid
+        let legacy_path = Self::legacy_config_path()?;
+        if legacy_path.exists() {
+            let content_bytes = fs::read(legacy_path)?;
+            let content_stripped = StripComments::new(&content_bytes[..]);
+            let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
+            Self::validate_provider(&mut config);
+            return Ok(config);
         }
-        
-        Ok(config)
+
+        Err("config file does not exist".into())
+    }
+
+    fn validate_provider(&mut self) {
+        if self.providers.is_empty() {
+            self.selected_provider = 0;
+        } else if self.selected_provider >= self.providers.len() {
+            self.selected_provider = 0;
+        }
     }
 
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = Self::config_path()?;
         let content = serde_json::to_string_pretty(self)?;
         fs::write(&config_path, content)?;
-        
+
         // Set file permissions to 600 (user read/write only) on Unix systems
         #[cfg(unix)]
         {
@@ -117,7 +153,7 @@ impl ShaiConfig {
             perms.set_mode(0o600);
             fs::set_permissions(&config_path, perms)?;
         }
-        
+
         Ok(())
     }
 
@@ -142,7 +178,11 @@ impl ShaiConfig {
 
     pub fn remove_provider(&mut self, index: usize) -> Result<ProviderConfig, String> {
         if index >= self.providers.len() {
-            return Err(format!("Provider index {} out of bounds (have {} providers)", index, self.providers.len()));
+            return Err(format!(
+                "Provider index {} out of bounds (have {} providers)",
+                index,
+                self.providers.len()
+            ));
         }
 
         if self.providers.len() == 1 {
@@ -207,7 +247,7 @@ impl ShaiConfig {
                         } else {
                             format!("http: {}", url)
                         }
-                    },
+                    }
                     McpConfig::Sse { url } => format!("sse: {}", url),
                 };
                 (name.clone(), description)
@@ -226,11 +266,14 @@ impl Default for ShaiConfig {
             // default to ovhcloud qwen3 in anonymous mode
             providers: vec![ProviderConfig {
                 provider: "ovhcloud".to_string(),
-                env_vars: HashMap::from([
-                    (String::from("OVH_BASE_URL"), String::from("https://qwen-3-32b.endpoints.kepler.ai.cloud.ovh.net/api/openai_compat/v1"))
-                ]),
+                env_vars: HashMap::from([(
+                    String::from("OVH_BASE_URL"),
+                    String::from(
+                        "https://qwen-3-32b.endpoints.kepler.ai.cloud.ovh.net/api/openai_compat/v1",
+                    ),
+                )]),
                 model: "Qwen3-32B".to_string(),
-                tool_method: ToolCallMethod::FunctionCall
+                tool_method: ToolCallMethod::FunctionCall,
             }],
             selected_provider: 0,
             mcp_configs: HashMap::new(),
@@ -239,22 +282,30 @@ impl Default for ShaiConfig {
 }
 
 impl ShaiConfig {
-    pub async fn get_llm() -> Result<(LlmClient, String), Box<dyn std::error::Error>>{
-        let config = ShaiConfig::load()
-            .unwrap_or_else(|_| ShaiConfig::default());
+    pub async fn get_llm() -> Result<(LlmClient, String), Box<dyn std::error::Error>> {
+        let config = ShaiConfig::load().unwrap_or_else(|e| {
+            tracing::warn!("Failed to load config, using default: {}", e);
+            ShaiConfig::default()
+        });
 
         config.set_env_vars();
-        
+
         let llm = if let Some(provider_config) = config.get_selected_provider() {
-            LlmClient::create_provider(
-                &provider_config.provider, 
-                &provider_config.env_vars)
-                .map_err(|e| format!("Failed to create {} client: {}", provider_config.provider, e))?
+            LlmClient::create_provider(&provider_config.provider, &provider_config.env_vars)
+                .map_err(|e| {
+                    format!(
+                        "Failed to create {} client: {}",
+                        provider_config.provider, e
+                    )
+                })?
         } else {
             return Err("No provider configured".into());
         };
-    
-        let model = llm.default_model().await.map_err(|_| "no Model available")?;
+
+        let model = llm
+            .default_model()
+            .await
+            .map_err(|_| "no Model available")?;
         Ok((llm, model))
     }
 }

@@ -1,0 +1,11 @@
+{
+  "name": "add-glob-tool",
+  "category": "feature",
+  "difficulty": "medium",
+  "setup": "curl -sL https://github.com/ovh/shai/archive/refs/tags/v0.1.10.tar.gz | tar xz -C . && cd shai-0.1.10/shai-core",
+  "goal": "Add a new tool called 'glob' to the coder agent that lists files matching a glob pattern. The tool should accept a 'pattern' string argument and return matching file paths. Register it in the coder factory function in src/runners/coder/coder.rs alongside the existing tools. Follow the same patterns as existing tools like FindTool.",
+  "prompts": [],
+  "verify": [
+    { "command": "cargo check" }
+  ]
+}
