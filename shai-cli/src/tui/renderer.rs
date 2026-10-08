@@ -1,6 +1,7 @@
 use ratatui::layout::Rect;
 use shai_core::agent::events::AgentEvent;
 use shai_core::agent::output::PrettyFormatter;
+use shai_core::config::tui::ThemePreference;
 
 use super::handler::AgentHandler;
 use super::history::ConversationHistory;
@@ -31,6 +32,11 @@ impl RenderManager {
     pub fn formatter(&self) -> &PrettyFormatter {
         &self.formatter
     }
+
+    /// Update the markdown skin, e.g. after a runtime theme toggle.
+    pub fn set_markdown_theme(&mut self, theme: ThemePreference) {
+        self.formatter.set_theme(theme);
+    }
 }
 
 #[async_trait::async_trait]
@@ -58,6 +64,44 @@ impl AgentHandler for RenderManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
+
+    fn bold_brain_event() -> AgentEvent {
+        AgentEvent::BrainResult {
+            timestamp: Utc::now(),
+            thought: Ok(ChatMessage::Assistant {
+                content: Some(ChatMessageContent::Text(
+                    "run this:\n```rust\nlet x = 1;\n```".to_string(),
+                )),
+                reasoning: None,
+                reasoning_content: None,
+                refusal: None,
+                name: None,
+                audio: None,
+                tool_calls: None,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_markdown_theme_updates_formatter() {
+        let mut renderer = RenderManager::new();
+        let event = bold_brain_event();
+
+        renderer.set_markdown_theme(ThemePreference::Light);
+        let light_reference = PrettyFormatter::with_theme(ThemePreference::Light);
+        let light_out = light_reference.format_event(&event);
+        assert_eq!(renderer.formatter().format_event(&event), light_out);
+
+        renderer.set_markdown_theme(ThemePreference::Dark);
+        let dark_reference = PrettyFormatter::with_theme(ThemePreference::Dark);
+        let dark_out = dark_reference.format_event(&event);
+        assert_eq!(renderer.formatter().format_event(&event), dark_out);
+
+        // The two themes must actually produce different styling
+        assert_ne!(light_out, dark_out);
+    }
 
     #[tokio::test]
     async fn test_handle_error_event() {

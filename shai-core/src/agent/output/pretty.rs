@@ -35,7 +35,14 @@ impl PrettyFormatter {
     }
 
     fn with_theme_and_preview_lines(theme: ThemePreference, max_preview_lines: usize) -> Self {
-        let skin = match theme {
+        Self {
+            skin: Self::skin_for_theme(theme),
+            max_preview_lines,
+        }
+    }
+
+    fn skin_for_theme(theme: ThemePreference) -> MadSkin {
+        match theme {
             ThemePreference::Light => MadSkin::default_light(),
             // Markdown rendering defaults to dark; light is opt-in only
             ThemePreference::Dark => {
@@ -43,11 +50,12 @@ impl PrettyFormatter {
                 skin.code_block.set_fgbg(Color::DarkGrey, Color::Reset);
                 skin
             }
-        };
-        Self {
-            skin,
-            max_preview_lines,
         }
+    }
+
+    /// Swap the markdown skin, e.g. after a runtime theme toggle.
+    pub fn set_theme(&mut self, theme: ThemePreference) {
+        self.skin = Self::skin_for_theme(theme);
     }
 
     /// Format an agent event into a displayable string
@@ -569,6 +577,33 @@ mod tests {
         let _dark = PrettyFormatter::with_theme(ThemePreference::Dark);
         let _light = PrettyFormatter::with_theme(ThemePreference::Light);
         let _default = PrettyFormatter::new();
+    }
+
+    #[test]
+    fn test_set_theme_switches_markdown_skin() {
+        // Code blocks render with theme-specific colors in both skins.
+        fn render(formatter: &PrettyFormatter) -> String {
+            formatter
+                .skin
+                .term_text("```rust\nlet x = 1;\n```")
+                .to_string()
+        }
+
+        let mut formatter = PrettyFormatter::with_theme(ThemePreference::Dark);
+        let light_reference = PrettyFormatter::with_theme(ThemePreference::Light);
+
+        let dark_before = render(&formatter);
+        assert_ne!(
+            dark_before,
+            render(&light_reference),
+            "dark and light skins must render differently"
+        );
+
+        formatter.set_theme(ThemePreference::Light);
+        assert_eq!(render(&formatter), render(&light_reference));
+
+        formatter.set_theme(ThemePreference::Dark);
+        assert_eq!(render(&formatter), dark_before);
     }
 
     #[test]

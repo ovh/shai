@@ -139,6 +139,29 @@ impl ChatClient {
         request
     }
 
+    /// Map an HTTP status to the corresponding [`ChatError`].
+    ///
+    /// `retry_after` must be read from the response headers before the body
+    /// is consumed.
+    fn error_from_status(
+        status: reqwest::StatusCode,
+        retry_after: Option<std::time::Duration>,
+        error_text: String,
+    ) -> ChatError {
+        match status.as_u16() {
+            400 => ChatError::Api(APIError::InvalidRequestError(error_text)),
+            401 => ChatError::Api(APIError::AuthenticationError(error_text)),
+            403 => ChatError::Api(APIError::PermissionError(error_text)),
+            404 => ChatError::Api(APIError::NotFoundError(error_text)),
+            429 | 503 => ChatError::RateLimited(RateLimitedError::new(
+                status.as_u16(),
+                retry_after,
+                error_text,
+            )),
+            _ => ChatError::Api(APIError::UnknownError(status.as_u16(), error_text)),
+        }
+    }
+
     /// Check status code and handle errors.
     ///
     /// Rate-limiting responses (429/503) are surfaced as [`ChatError::RateLimited`]
@@ -155,22 +178,7 @@ impl ChatClient {
                     let status = response.status();
                     let retry_after = retry_after_from_headers(response.headers());
                     let error_text = response.text().await.unwrap_or_default();
-
-                    match status.as_u16() {
-                        400 => Err(ChatError::Api(APIError::InvalidRequestError(error_text))),
-                        401 => Err(ChatError::Api(APIError::AuthenticationError(error_text))),
-                        403 => Err(ChatError::Api(APIError::PermissionError(error_text))),
-                        404 => Err(ChatError::Api(APIError::NotFoundError(error_text))),
-                        429 | 503 => Err(ChatError::RateLimited(RateLimitedError::new(
-                            status.as_u16(),
-                            retry_after,
-                            error_text,
-                        ))),
-                        _ => Err(ChatError::Api(APIError::UnknownError(
-                            status.as_u16(),
-                            error_text,
-                        ))),
-                    }
+                    Err(Self::error_from_status(status, retry_after, error_text))
                 }
             }
             Err(error) => Err(ChatError::Api(APIError::ParseError(error.to_string()))),
@@ -230,11 +238,44 @@ impl ChatClient {
         json = hooks.before_send(json).await?;
 
         // Create event source for streaming
-        let event_source = self
+        let mut event_source = self
             .build_request(Method::POST, "/chat/completions", "application/json")
             .json(&json)
             .eventsource()
             .map_err(|e| APIError::ParseError(e.to_string()))?;
+
+        // Wait for the connection to be established before returning the
+        // stream. A healthy connection emits `Event::Open` first; HTTP errors
+        // (non-200 status, wrong content type) would otherwise only surface
+        // as stream items, after the caller's retry loop has already accepted
+        // the stream. Surfacing them here lets `LlmClient::chat_stream` retry
+        // and honor `Retry-After` exactly like the non-streaming path.
+        match event_source.next().await {
+            Some(Ok(Event::Open)) => {}
+            Some(Err(reqwest_eventsource::Error::InvalidStatusCode(status, response))) => {
+                let retry_after = retry_after_from_headers(response.headers());
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(Self::error_from_status(status, retry_after, error_text));
+            }
+            Some(Err(reqwest_eventsource::Error::InvalidContentType(content_type, response))) => {
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(ChatError::Api(APIError::StreamError(format!(
+                    "unexpected content-type {:?}: {}",
+                    content_type, error_text
+                ))));
+            }
+            Some(Err(e)) => return Err(ChatError::Api(APIError::StreamError(e.to_string()))),
+            Some(Ok(_)) => {
+                return Err(ChatError::Api(APIError::StreamError(
+                    "unexpected event before stream open".to_string(),
+                )));
+            }
+            None => {
+                return Err(ChatError::Api(APIError::StreamError(
+                    "event stream closed before opening".to_string(),
+                )));
+            }
+        }
 
         // Return stream that processes events
         let stream = async_stream::stream! {
@@ -364,5 +405,94 @@ mod tests {
             ChatError::Api(APIError::AuthenticationError(_))
         ));
         assert_eq!(err.retry_after(), None);
+    }
+
+    #[tokio::test]
+    async fn stream_rate_limit_surfaces_retry_after() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(429)
+            .with_header("retry-after", "2")
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"rate limited"}"#)
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("test-key".into(), server.url());
+        let err = match client
+            .chat_completion_stream(&sample_params(), NoHooks)
+            .await
+        {
+            Err(err) => err,
+            Ok(_) => panic!("expected a rate-limit error before the stream is returned"),
+        };
+
+        match err {
+            ChatError::RateLimited(rate_limited) => {
+                assert_eq!(rate_limited.status, 429);
+                assert_eq!(
+                    rate_limited.retry_after,
+                    Some(std::time::Duration::from_secs(2))
+                );
+            }
+            other => panic!("expected ChatError::RateLimited, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_auth_error_surfaces_before_stream() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(401)
+            .with_header("content-type", "application/json")
+            .with_body("unauthorized")
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("bad-key".into(), server.url());
+        let err = match client
+            .chat_completion_stream(&sample_params(), NoHooks)
+            .await
+        {
+            Err(err) => err,
+            Ok(_) => panic!("expected an auth error before the stream is returned"),
+        };
+
+        assert!(matches!(
+            err,
+            ChatError::Api(APIError::AuthenticationError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_success_yields_chunks() {
+        let chunk_json = r#"{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#;
+        let body = format!("data: {}\n\ndata: [DONE]\n\n", chunk_json);
+
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("test-key".into(), server.url());
+        let mut stream = client
+            .chat_completion_stream(&sample_params(), NoHooks)
+            .await
+            .expect("stream should open on a 200 response");
+
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            chunks.push(item.expect("chunk should parse"));
+        }
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].id.as_deref(), Some("chatcmpl-test"));
+        assert_eq!(chunks[0].choices.len(), 1);
     }
 }

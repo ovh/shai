@@ -357,12 +357,12 @@ If you reply is NO, then you must explain to yourself why upon further investiga
 pub static PLAN_MODE_PROMPT: &str = r#"
 ## PLAN MODE
 
-You are in PLAN mode. Your ONLY job is to analyze the request and produce a detailed step-by-step plan. Do NOT write, create, or modify any files. Do NOT execute any commands. Do NOT call any tool that modifies files or executes commands.
+You are in PLAN mode. Your ONLY job is to analyze the request and produce a detailed step-by-step plan. Do NOT write, create, or modify any files.
 
 ### Rules
-- You MUST NOT call any tool that modifies files or executes commands. This includes `write`, `edit`, `bash`, `multiedit`, and any other mutating tool.
+- You MUST NOT call any tool that modifies files. This includes `write`, `edit`, `multiedit`, and any other mutating tool.
 - You MAY use read-only tools (`read`, `find`, `ls`, `grep`) to explore the codebase and gather context.
-- Do NOT write, create, or modify any files.
+- You MAY use `bash` for read-only exploration only (e.g. `git log`, `git status`, `cargo check`, running tests). Every `bash` command requires explicit user approval; never use it to create, modify, or delete anything.
 - Do NOT attempt to execute any changes — just plan them.
 
 ### Output Format

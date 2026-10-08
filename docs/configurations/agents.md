@@ -98,14 +98,19 @@ Post-edit verification runs a command after each tool batch that edited files, a
 | `timeout_secs` | integer | `30` | Per-command timeout in seconds |
 | `commands` | object&lt;string, string[]&gt; | per-language defaults | Verification command per language (`rust`, `go`, `python`, `typescript`, `javascript`, `perl`, `ruby`, `bash`, `php`, `lua`) |
 
-Commands are keyed by language, detected from the edited files' extensions. A command containing the `{files}` placeholder runs once per edited file of that language (recommended for file-scoped checkers like `bash -n` or `ruby -c`, which only check their first file argument). Commands without the placeholder run once as-is, suited to project-scoped verifiers like `cargo check`. A nonzero exit status is always reported as diagnostics, even without output.
+Commands are keyed by language, detected from the edited files' extensions. A command containing the `{files}` placeholder runs once per edited file of that language (recommended for file-scoped checkers like `bash -n` or `ruby -c`, which only check their first file argument). Commands without the placeholder run once as-is, suited to project-scoped verifiers like `cargo check`. A nonzero exit status is always reported as diagnostics, even without output. Missing verifier binaries are skipped with a warning.
+
+The stdlib-friendly defaults are: `cargo check` (rust), `go build ./...` (go), a syntax-only `compile()` check (python, no `__pycache__` artifacts), `tsc --noEmit {files}` (typescript), `node --check` (javascript), `perl -c`, `ruby -c`, `bash -n`, `php -l` and `luac -p`.
+
+Note: with file arguments, `tsc` ignores `tsconfig.json`. For a project-scoped TypeScript check that honors your tsconfig, override the default:
 
 Example:
 
 ```json
 "commands": {
   "rust": ["cargo", "check"],
-  "python": ["ruff", "check", "{files}"]
+  "python": ["ruff", "check", "{files}"],
+  "typescript": ["tsc", "-p", ".", "--noEmit"]
 }
 ```
 

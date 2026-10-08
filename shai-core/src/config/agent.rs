@@ -144,18 +144,25 @@ fn default_verification_commands() -> HashMap<String, Vec<String>> {
     // Per-file verifiers: `{files}` is replaced with each edited file and the
     // command runs once per file (several of these only check the first file
     // argument when given many)
+    // Syntax-only check via `compile()`: unlike `python -m py_compile` it does
+    // not write `__pycache__/*.pyc` artifacts next to the edited sources.
     commands.insert(
         "python".to_string(),
         vec![
             "python".into(),
-            "-m".into(),
-            "py_compile".into(),
+            "-c".into(),
+            "import sys; compile(open(sys.argv[1], encoding='utf-8').read(), sys.argv[1], 'exec')"
+                .into(),
             "{files}".into(),
         ],
     );
+    // Per-file check that understands TypeScript syntax (`node --check` only
+    // parses JavaScript and rejects valid TS). Note: with file arguments tsc
+    // ignores tsconfig.json; projects that want a project-scoped check can
+    // override this with e.g. ["tsc", "-p", ".", "--noEmit"].
     commands.insert(
         "typescript".to_string(),
-        vec!["node".into(), "--check".into(), "{files}".into()],
+        vec!["tsc".into(), "--noEmit".into(), "{files}".into()],
     );
     commands.insert(
         "javascript".to_string(),
@@ -378,5 +385,41 @@ impl AgentConfig {
             .flat_map(|mcp_tool| &mcp_tool.enabled_tools)
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod verification_default_tests {
+    use super::default_verification_commands;
+
+    #[test]
+    fn python_default_does_not_emit_bytecode_artifacts() {
+        let cmds = default_verification_commands();
+        let python = cmds.get("python").expect("python default present");
+        // py_compile writes __pycache__/*.pyc next to the edited sources; the
+        // default must use the side-effect-free compile() syntax check instead.
+        assert!(
+            !python.iter().any(|a| a.contains("py_compile")),
+            "python default must not use py_compile: {:?}",
+            python
+        );
+        assert!(python.iter().any(|a| a == "{files}"));
+    }
+
+    #[test]
+    fn typescript_default_understands_ts_syntax() {
+        let cmds = default_verification_commands();
+        let ts = cmds.get("typescript").expect("typescript default present");
+        // `node --check` only parses JavaScript and rejects valid TypeScript;
+        // the default must use a TS-aware checker.
+        assert!(
+            !(ts.first().map(|s| s == "node").unwrap_or(false)
+                && ts.iter().any(|a| a == "--check")),
+            "typescript default must not be `node --check`: {:?}",
+            ts
+        );
+        assert_eq!(ts.first().map(|s| s.as_str()), Some("tsc"));
+        assert!(ts.iter().any(|a| a == "--noEmit"));
+        assert!(ts.iter().any(|a| a == "{files}"));
     }
 }

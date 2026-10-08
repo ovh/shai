@@ -175,6 +175,16 @@ impl App<'_> {
             self.status_bar.theme_mut().toggle();
             let new_palette = self.status_bar.palette();
             self.input.set_palette(new_palette);
+            // Keep the markdown formatter in sync with the toggled theme unless
+            // the user pinned an explicit markdown_skin override in the config.
+            let config = shai_core::config::tui::TuiConfig::load();
+            if config.markdown_skin.is_none() {
+                let pref = match *self.status_bar.theme() {
+                    super::theme::Theme::Dark => shai_core::config::tui::ThemePreference::Dark,
+                    super::theme::Theme::Light => shai_core::config::tui::ThemePreference::Light,
+                };
+                self.renderer.set_markdown_theme(pref);
+            }
             return Ok(());
         }
 
