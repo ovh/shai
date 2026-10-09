@@ -440,6 +440,12 @@ async fn handle_main_with_prompt(
 async fn handle_config() -> Result<(), Box<dyn std::error::Error>> {
     let mut auth = AppAuth::new();
     auth.run().await;
+
+    // Standalone entry point: the auth view enabled raw mode and hid the
+    // cursor, restore both before handing the terminal back to the shell.
+    // (When the auth view runs embedded via /auth, the main TUI owns those.)
+    let _ = io::stdout().execute(cursor::Show);
+    let _ = disable_raw_mode();
     Ok(())
 }
 

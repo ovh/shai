@@ -266,8 +266,10 @@ impl App<'_> {
                     .tool_tracker()
                     .last_file_path()
                     .map(|s| s.to_string());
+                self.suspend_event_reader();
                 let mut viewer = AlternateScreenViewer::new(output, file_path);
                 let _ = viewer.run().await;
+                self.resume_event_reader();
             }
             return Ok(());
         }
@@ -283,8 +285,10 @@ impl App<'_> {
                 return Ok(());
             }
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+            self.suspend_event_reader();
             let mut viewer = AlternateScreenViewer::new(raw_text, None);
             let _ = viewer.run().await;
+            self.resume_event_reader();
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
             return Ok(());
         }
@@ -310,8 +314,11 @@ impl App<'_> {
                 &active,
                 self.status_bar.palette(),
             );
+            self.suspend_event_reader();
+            let picker_result = picker.run().await;
+            self.resume_event_reader();
             if let Ok(crate::tui::prompt_picker::PromptPickerAction::Selected(selected)) =
-                picker.run().await
+                picker_result
             {
                 if let Some(ref agent) = self.agent {
                     let _ = agent.controller.set_active_prompts(selected.clone()).await;
@@ -394,6 +401,10 @@ impl App<'_> {
                     .unwrap_or(24);
 
                 if widget.height() > terminal_height.saturating_sub(5) {
+                    // Owned copy so the borrow of `self.agent_state` ends
+                    // before the mutable borrow below.
+                    let request_id = request_id.clone();
+                    self.suspend_event_reader();
                     let action = match super::perm_alt_screen::AlternateScreenPermissionModal::new(
                         &widget, palette,
                     ) {
@@ -408,6 +419,7 @@ impl App<'_> {
                             choice: shai_core::agent::PermissionResponse::Deny,
                         },
                     };
+                    self.resume_event_reader();
                     self.handle_permission_action(action).await?;
                 } else {
                     self.ui_state.modal_state = AppModalState::PermissionModal {

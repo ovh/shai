@@ -67,6 +67,7 @@ impl AppAuth {
         }));
 
         let mut reader = crossterm::event::EventStream::new();
+        let mut redraw_timer = tokio::time::interval(std::time::Duration::from_millis(100));
 
         while !self.exit && !matches!(self.state, AuthState::Done) {
             self.draw_ui()?;
@@ -78,13 +79,19 @@ impl AppAuth {
                     }
                 }
 
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)), if matches!(&self.state, AuthState::EnvConfig(modal) if modal.is_fetching()) => {
+                // Periodic redraw: some terminals report their size late, so the
+                // very first frame can render into a zero-area buffer and appear
+                // black until the first input event. Re-drawing on a tick lets
+                // autoresize() pick up the real size and repaint promptly.
+                _ = redraw_timer.tick() => {
                     if let AuthState::EnvConfig(ref mut modal_envs) = &mut self.state {
-                        if let Some(Ok(models)) = modal_envs.poll_fetch() {
-                            if let AuthState::EnvConfig(modal_envs) = std::mem::replace(&mut self.state, AuthState::Done) {
-                                let (config, providers, provider, env_values) = modal_envs.extract_state();
-                                let modal_model = ModalModel::new(models, config.clone(), providers, provider, env_values);
-                                self.state = AuthState::ModelSelection(modal_model);
+                        if modal_envs.is_fetching() {
+                            if let Some(Ok(models)) = modal_envs.poll_fetch() {
+                                if let AuthState::EnvConfig(modal_envs) = std::mem::replace(&mut self.state, AuthState::Done) {
+                                    let (config, providers, provider, env_values) = modal_envs.extract_state();
+                                    let modal_model = ModalModel::new(models, config.clone(), providers, provider, env_values);
+                                    self.state = AuthState::ModelSelection(modal_model);
+                                }
                             }
                         }
                     }
@@ -135,12 +142,12 @@ impl AppAuth {
                         self.exit = true;
                     }
                     NavAction::Next => {
-                        let config = ShaiConfig::load().unwrap_or_else(|e| {
-                            eprintln!("Warning: failed to load config, using default: {}", e);
-                            ShaiConfig::default()
-                        });
+                        let (config, load_error) = ShaiConfig::load_or_default();
                         let providers = LlmClient::list_providers();
-                        let modal_providers = ModalProviders::new(config, providers);
+                        let modal_providers = match load_error {
+                            Some(error) => ModalProviders::new_with_error(config, providers, error),
+                            None => ModalProviders::new(config, providers),
+                        };
                         self.state = AuthState::SelectProvider(modal_providers);
                     }
                     NavAction::None => {}
@@ -195,7 +202,7 @@ impl AppAuth {
                         if let AuthState::ModelSelection(modal_model) =
                             std::mem::replace(&mut self.state, AuthState::Done)
                         {
-                            if let Err(e) = self
+                            let add_error = self
                                 .add_provider_to_config(
                                     &modal_model.config,
                                     modal_model.provider.name,
@@ -203,11 +210,13 @@ impl AppAuth {
                                     &modal_model,
                                 )
                                 .await
-                            {
-                                eprintln!("Failed to add provider: {}", e);
-                            }
+                                .err()
+                                .map(|e| format!("Failed to add provider: {}", e));
 
-                            let modal_config = ModalConfig::new();
+                            let modal_config = match add_error {
+                                Some(error) => ModalConfig::new_with_error(error),
+                                None => ModalConfig::new(),
+                            };
                             self.state = AuthState::Start(modal_config);
                         }
                     }

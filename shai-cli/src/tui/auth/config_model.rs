@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     symbols::border,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
 use shai_core::config::config::ShaiConfig;
@@ -167,12 +167,17 @@ impl ModalModel {
         NavAction::None
     }
 
-    fn inner_height(&self) -> usize {
+    fn inner_height(&self, error_height: u16) -> usize {
         let search_bar_height = if self.search_mode { 2 } else { 0 };
         let visible_models = std::cmp::min(self.filtered_models.len(), MAX_VISIBLE_MODELS);
-        let error_height = if self.error_message.is_some() { 2 } else { 0 };
+        // Empty line separator + the wrapped error message itself
+        let error_area_height = if error_height > 0 {
+            error_height as usize + 1
+        } else {
+            0
+        };
         let help_height = 2;
-        visible_models + search_bar_height + error_height + help_height
+        visible_models + search_bar_height + error_area_height + help_height
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
@@ -199,7 +204,12 @@ impl ModalModel {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let constraints = vec![Constraint::Length(1); self.inner_height()];
+        let error_height = self
+            .error_message
+            .as_deref()
+            .map(|error| super::error_height(error, inner.width))
+            .unwrap_or(0);
+        let constraints = vec![Constraint::Length(1); self.inner_height(error_height)];
         let layout_areas = Layout::vertical(constraints).split(inner);
 
         let mut area_index = 0;
@@ -275,10 +285,17 @@ impl ModalModel {
         // Draw error message if present
         if let Some(error) = &self.error_message {
             area_index += 1; // Skip empty line
-            let error_paragraph =
-                Paragraph::new(error.clone()).style(Style::default().fg(Color::Red));
-            frame.render_widget(error_paragraph, layout_areas[area_index]);
-            area_index += 1;
+            if let Some(error_area) = layout_areas.get(area_index) {
+                // Layout rows are 1-line each: merge `error_height` consecutive
+                // rows into a single area for the wrapped error message.
+                let mut error_area = *error_area;
+                error_area.height = error_height;
+                let error_paragraph = Paragraph::new(error.clone())
+                    .style(Style::default().fg(Color::Red))
+                    .wrap(Wrap { trim: false });
+                frame.render_widget(error_paragraph, error_area);
+            }
+            area_index += error_height as usize;
         }
 
         // Draw help text

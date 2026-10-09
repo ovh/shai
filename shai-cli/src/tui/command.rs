@@ -450,9 +450,14 @@ impl CommandRegistry {
                     let _ = agent.handle.await;
                 }
 
-                // Run auth TUI
+                // Run auth TUI. Suspend the main event reader first: crossterm
+                // only supports one event reader at a time, and the idle main
+                // reader would keep its lock held, deadlocking the auth view's
+                // own EventStream (black screen until a key press).
+                app.suspend_event_reader();
                 let mut auth = crate::tui::auth::auth::AppAuth::new();
                 auth.run().await;
+                app.resume_event_reader();
 
                 // Recreate agent
                 app.start_agent(agent_name.as_deref()).await.ok();

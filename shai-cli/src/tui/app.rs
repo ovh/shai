@@ -54,6 +54,7 @@ pub struct App<'a> {
     pub(crate) status_bar: StatusBar,
     pub(crate) initial_modal: InitialModal,
     pub(crate) initial_prompt: Option<String>,
+    pub(crate) event_reader: Option<crossterm::event::EventStream>,
 }
 
 impl App<'_> {
@@ -315,7 +316,26 @@ impl App<'_> {
             status_bar: StatusBar::new(theme),
             initial_modal: InitialModal::None,
             initial_prompt: None,
+            event_reader: None,
         }
+    }
+
+    /// Drop the main event reader so a nested full-screen view (auth,
+    /// permission modal, viewer, ...) can create its own.
+    ///
+    /// Crossterm has a single global event reader behind a mutex, and an idle
+    /// [`crossterm::event::EventStream`] keeps that mutex held in its waker
+    /// thread while blocked on input. A nested view constructing a second
+    /// stream would then deadlock until the next key press, leaving a black
+    /// screen. Dropping the stream shuts its waker thread down and releases
+    /// the lock; the global reader itself (and any queued events) survives.
+    pub(crate) fn suspend_event_reader(&mut self) {
+        self.event_reader = None;
+    }
+
+    /// Re-create the main event reader after a nested view exited.
+    pub(crate) fn resume_event_reader(&mut self) {
+        self.event_reader = Some(crossterm::event::EventStream::new());
     }
 
     pub fn notify(&mut self, msg: &str, duration: std::time::Duration) {
@@ -413,32 +433,41 @@ impl App<'_> {
         }
 
         let mut animation_timer = interval(Duration::from_millis(100));
-        let mut reader = crossterm::event::EventStream::new();
+        self.resume_event_reader();
 
         while !self.ui_state.exit {
             self.draw_ui()
                 .map_err(|_| -> Box<dyn std::error::Error> { "oops... (x_x)'".into() })?;
 
+            let mut reader = self.event_reader.take().unwrap_or_default();
+
             tokio::select! {
                 agent_event = self.receive_agent_event(), if self.agent.is_some() => {
+                    self.event_reader = Some(reader);
                     if let Some(event) = agent_event {
                         self.handle_agent_event(event).await?;
                     }
+                    reader = self.event_reader.take().unwrap_or_default();
                 }
 
                 crossterm_event = reader.next() => {
+                    self.event_reader = Some(reader);
                     if let Some(Ok(event)) = crossterm_event {
                         self.handle_crossterm_event(event).await?;
                     }
+                    reader = self.event_reader.take().unwrap_or_default();
                 }
 
                 _ = animation_timer.tick() => {
+                    self.event_reader = Some(reader);
                     if let Some(action) = self.input.check_pending_enter() {
                         self.handle_user_action(action).await?;
                     }
+                    reader = self.event_reader.take().unwrap_or_default();
                 }
             }
 
+            self.event_reader = Some(reader);
             self.check_permission_queue().await?;
         }
         Ok(())

@@ -161,6 +161,21 @@ impl ShaiConfig {
             .unwrap_or(false)
     }
 
+    /// Load the config, falling back to the default one.
+    ///
+    /// Returns a warning message only when a config file exists but could not
+    /// be loaded; a missing file is the normal first-run case.
+    pub fn load_or_default() -> (ShaiConfig, Option<String>) {
+        match Self::load() {
+            Ok(config) => (config, None),
+            Err(e) => {
+                let warning =
+                    Self::exists().then(|| format!("Failed to load config, using default: {}", e));
+                (ShaiConfig::default(), warning)
+            }
+        }
+    }
+
     /// Set environment variables from the currently selected provider
     pub fn set_env_vars(&self) {
         if let Some(provider_config) = self.get_selected_provider() {
