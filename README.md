@@ -121,6 +121,17 @@ shai status   # Check if shai is active
 
 ## Configuration
 
+### Compatible OVHCloud endpoints
+
+OVHCloud [AI Endpoints](https://www.ovhcloud.com/en/public-cloud/ai-endpoints/) provides OpenAI-compatible LLM endpoints for using shai with tools. Follow the official [getting started guide](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started) to create a [Public Cloud project](https://www.ovh.com/manager/#/public-cloud) and then generate an API key from the `AI Endpoints` section of the control panel.
+
+Authenticating with an API key raises the rate limit from **2 requests per minute** (anonymous, per IP and model) to **400 requests per minute** (per project and model).
+
+Once your key is set in shai, pick a model from the [AI Endpoints catalog](https://endpoints.ai.cloud.ovh.net/catalog):
+
+- models with a function calling feature work best with shai;
+- for models without it, force structured output with the `/set so` option.
+
 ### Project Context File
 
 Shai supports the [AGENTS.md](https://agents.md/) convention — a standard markdown file at the root of your project containing build steps, code style guidelines, testing instructions, and other context for AI coding agents.
