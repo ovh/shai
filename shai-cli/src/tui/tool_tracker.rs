@@ -72,8 +72,8 @@ impl Default for ToolTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::test_utils::make_tool_call;
+    use super::*;
 
     #[test]
     fn test_start_and_complete_tool() {

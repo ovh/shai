@@ -10,8 +10,9 @@ pub struct StdoutEventManager {
 
 impl StdoutEventManager {
     pub fn new() -> Self {
+        let skin = crate::config::tui::TuiConfig::load().markdown_skin();
         Self {
-            formatter: PrettyFormatter::new(),
+            formatter: PrettyFormatter::with_theme(skin),
         }
     }
 }

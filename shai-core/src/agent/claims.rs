@@ -43,8 +43,7 @@ impl Permission {
         }
     }
 
-    /// Add a permission
-
+    /// Add a description
     pub fn with_description(mut self, description: String) -> Self {
         self.description = Some(description);
         self

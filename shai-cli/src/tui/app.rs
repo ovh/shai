@@ -54,6 +54,7 @@ pub struct App<'a> {
     pub(crate) status_bar: StatusBar,
     pub(crate) initial_modal: InitialModal,
     pub(crate) initial_prompt: Option<String>,
+    pub(crate) event_reader: Option<crossterm::event::EventStream>,
 }
 
 impl App<'_> {
@@ -145,12 +146,13 @@ impl App<'_> {
         for message in trace {
             let formatted = match message {
                 ChatMessage::User { content, .. } => match content {
-                    ChatMessageContent::Text(text) => self
-                        .renderer
-                        .formatter()
-                        .format_event(&AgentEvent::UserInput {
-                            input: text.clone(),
-                        }),
+                    ChatMessageContent::Text(text) => {
+                        self.renderer
+                            .formatter()
+                            .format_event(&AgentEvent::UserInput {
+                                input: text.clone(),
+                            })
+                    }
                     _ => None,
                 },
                 ChatMessage::Assistant { content, .. } => {
@@ -271,16 +273,17 @@ impl App<'_> {
 
     fn refresh_status_bar(&mut self) {
         if let Ok(cwd) = std::env::current_dir() {
-            self.status_bar
-                .set_location(&cwd.to_string_lossy().to_string());
+            self.status_bar.set_location(cwd.to_string_lossy().as_ref());
         }
-        if let Ok(output) = std::process::Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .output()
-        {
-            if output.status.success() {
-                let branch = String::from_utf8_lossy(&output.stdout);
-                self.status_bar.set_git_branch(branch.trim());
+        if self.status_bar.git_needs_refresh() {
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+            {
+                if output.status.success() {
+                    let branch = String::from_utf8_lossy(&output.stdout);
+                    self.status_bar.set_git_branch(branch.trim());
+                }
             }
         }
         self.status_bar
@@ -291,7 +294,7 @@ impl App<'_> {
 // UI-related Internals
 impl App<'_> {
     pub fn new() -> Self {
-        let theme = Theme::from_env();
+        let theme = Theme::from_config();
         let palette = theme.palette();
         let shortcuts = Shortcuts::load();
         let mut input = InputArea::new(palette);
@@ -313,7 +316,26 @@ impl App<'_> {
             status_bar: StatusBar::new(theme),
             initial_modal: InitialModal::None,
             initial_prompt: None,
+            event_reader: None,
         }
+    }
+
+    /// Drop the main event reader so a nested full-screen view (auth,
+    /// permission modal, viewer, ...) can create its own.
+    ///
+    /// Crossterm has a single global event reader behind a mutex, and an idle
+    /// [`crossterm::event::EventStream`] keeps that mutex held in its waker
+    /// thread while blocked on input. A nested view constructing a second
+    /// stream would then deadlock until the next key press, leaving a black
+    /// screen. Dropping the stream shuts its waker thread down and releases
+    /// the lock; the global reader itself (and any queued events) survives.
+    pub(crate) fn suspend_event_reader(&mut self) {
+        self.event_reader = None;
+    }
+
+    /// Re-create the main event reader after a nested view exited.
+    pub(crate) fn resume_event_reader(&mut self) {
+        self.event_reader = Some(crossterm::event::EventStream::new());
     }
 
     pub fn notify(&mut self, msg: &str, duration: std::time::Duration) {
@@ -374,6 +396,9 @@ impl App<'_> {
             terminal.clear()?;
         }
 
+        self.renderer
+            .history_mut()
+            .add_text(&super::theme::welcome_text());
         if !banner.is_empty() {
             self.renderer.history_mut().add_text(&banner);
         }
@@ -387,8 +412,9 @@ impl App<'_> {
         // Show initial modal if requested
         match self.initial_modal {
             InitialModal::AgentPicker => {
-                self.ui_state.agent_picker =
-                    Some(super::agent_picker::AgentPicker::new(self.status_bar.palette()));
+                self.ui_state.agent_picker = Some(super::agent_picker::AgentPicker::new(
+                    self.status_bar.palette(),
+                ));
             }
             InitialModal::SessionPicker => {
                 let sessions =
@@ -407,32 +433,41 @@ impl App<'_> {
         }
 
         let mut animation_timer = interval(Duration::from_millis(100));
-        let mut reader = crossterm::event::EventStream::new();
+        self.resume_event_reader();
 
         while !self.ui_state.exit {
             self.draw_ui()
                 .map_err(|_| -> Box<dyn std::error::Error> { "oops... (x_x)'".into() })?;
 
+            let mut reader = self.event_reader.take().unwrap_or_default();
+
             tokio::select! {
                 agent_event = self.receive_agent_event(), if self.agent.is_some() => {
+                    self.event_reader = Some(reader);
                     if let Some(event) = agent_event {
                         self.handle_agent_event(event).await?;
                     }
+                    reader = self.event_reader.take().unwrap_or_default();
                 }
 
                 crossterm_event = reader.next() => {
+                    self.event_reader = Some(reader);
                     if let Some(Ok(event)) = crossterm_event {
                         self.handle_crossterm_event(event).await?;
                     }
+                    reader = self.event_reader.take().unwrap_or_default();
                 }
 
                 _ = animation_timer.tick() => {
+                    self.event_reader = Some(reader);
                     if let Some(action) = self.input.check_pending_enter() {
                         self.handle_user_action(action).await?;
                     }
+                    reader = self.event_reader.take().unwrap_or_default();
                 }
             }
 
+            self.event_reader = Some(reader);
             self.check_permission_queue().await?;
         }
         Ok(())

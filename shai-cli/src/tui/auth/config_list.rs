@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Style},
     symbols::border,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
 use shai_core::config::config::ShaiConfig;
@@ -17,19 +17,29 @@ use shai_llm::client::LlmClient;
 pub struct ModalConfig {
     config: ShaiConfig,
     selected_index: usize,
+    error_message: Option<String>,
 }
 
 impl ModalConfig {
     pub fn new() -> Self {
-        let config = ShaiConfig::load().unwrap_or_else(|e| {
-            eprintln!("Warning: failed to load config, using default: {}", e);
-            ShaiConfig::default()
-        });
+        Self::from_load(None)
+    }
 
+    pub fn new_with_error(error: String) -> Self {
+        Self::from_load(Some(error))
+    }
+
+    fn from_config(config: ShaiConfig, error_message: Option<String>) -> Self {
         Self {
             config,
             selected_index: 0,
+            error_message,
         }
+    }
+
+    fn from_load(error: Option<String>) -> Self {
+        let (config, load_error) = ShaiConfig::load_or_default();
+        Self::from_config(config, error.or(load_error))
     }
 
     fn total_items(&self) -> usize {
@@ -43,6 +53,9 @@ impl ModalConfig {
 
 impl ModalConfig {
     pub async fn handle_event(&mut self, key_event: KeyEvent) -> NavAction {
+        // Clear any error message on any key press
+        self.error_message = None;
+
         match key_event.code {
             KeyCode::Up => {
                 if self.selected_index > 0 {
@@ -63,12 +76,12 @@ impl ModalConfig {
                 } else {
                     // Select existing provider and save config
                     if let Err(e) = self.config.set_selected_provider(self.selected_index) {
-                        eprintln!("Error selecting provider: {}", e);
+                        self.error_message = Some(format!("Error selecting provider: {}", e));
                         return NavAction::None;
                     }
 
                     if let Err(e) = self.config.save() {
-                        eprintln!("Error saving config: {}", e);
+                        self.error_message = Some(format!("Error saving config: {}", e));
                         return NavAction::None;
                     }
 
@@ -81,7 +94,7 @@ impl ModalConfig {
                 // Delete the selected provider (only if it's not the "Add provider" option and we have providers)
                 if !self.is_add_provider_selected() && !self.config.providers.is_empty() {
                     if let Err(e) = self.config.remove_provider(self.selected_index) {
-                        eprintln!("Error removing provider: {}", e);
+                        self.error_message = Some(format!("Error removing provider: {}", e));
                         return NavAction::None;
                     }
 
@@ -96,7 +109,8 @@ impl ModalConfig {
 
                     // Save config after deletion
                     if let Err(e) = self.config.save() {
-                        eprintln!("Error saving config after deletion: {}", e);
+                        self.error_message =
+                            Some(format!("Error saving config after deletion: {}", e));
                     }
                 }
                 NavAction::None
@@ -106,11 +120,21 @@ impl ModalConfig {
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
-        let [list, help] = Layout::vertical(vec![
-            Constraint::Length((4 + 1 + self.total_items() + 1) as u16),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let mut constraints = vec![Constraint::Length((4 + 1 + self.total_items() + 1) as u16)];
+
+        // Add error area if error message exists
+        let error_height = self
+            .error_message
+            .as_deref()
+            .map(|error| super::error_height(error, area.width))
+            .unwrap_or(0);
+        if error_height > 0 {
+            constraints.push(Constraint::Length(error_height));
+        }
+
+        constraints.push(Constraint::Length(1)); // help line
+
+        let layout_areas = Layout::vertical(constraints).split(area);
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -183,20 +207,113 @@ impl ModalConfig {
 
         let text = Text::from(lines);
         let paragraph = Paragraph::new(text).block(block);
-        frame.render_widget(paragraph, list);
+        frame.render_widget(paragraph, layout_areas[0]);
 
-        let help_text = if self.config.providers.is_empty() {
-            " ↑↓ navigate • Enter add provider • Esc exit"
-        } else {
-            " ↑↓ navigate • Enter select/add • Backspace/d delete • Esc exit"
-        };
+        // Draw error message if present
+        if let Some(error) = &self.error_message {
+            if let Some(error_area) = layout_areas.get(1) {
+                frame.render_widget(
+                    Paragraph::new(error.clone())
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(Wrap { trim: false }),
+                    *error_area,
+                );
+            }
+        }
 
-        frame.render_widget(
-            Line::from(vec![Span::styled(
-                help_text,
-                Style::default().fg(Color::DarkGray),
-            )]),
-            help,
+        // Draw help text
+        let help_area_index = if self.error_message.is_some() { 2 } else { 1 };
+        if let Some(help_area) = layout_areas.get(help_area_index) {
+            let help_text = if self.config.providers.is_empty() {
+                " ↑↓ navigate • Enter add provider • Esc exit"
+            } else {
+                " ↑↓ navigate • Enter select/add • Backspace/d delete • Esc exit"
+            };
+
+            frame.render_widget(
+                Line::from(vec![Span::styled(
+                    help_text,
+                    Style::default().fg(Color::DarkGray),
+                )]),
+                *help_area,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key_press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[tokio::test]
+    async fn removing_last_provider_sets_error_message() {
+        // ShaiConfig::default() ships with a single provider
+        let mut modal = ModalConfig::from_config(ShaiConfig::default(), None);
+
+        let action = modal.handle_event(key_press(KeyCode::Char('d'))).await;
+
+        assert!(matches!(action, NavAction::None));
+        assert_eq!(modal.config.providers.len(), 1);
+        assert_eq!(
+            modal.error_message.as_deref(),
+            Some("Error removing provider: Cannot remove the last provider")
         );
+    }
+
+    #[tokio::test]
+    async fn error_message_is_cleared_on_next_key_press() {
+        let mut modal = ModalConfig::from_config(ShaiConfig::default(), Some("boom".to_string()));
+        assert_eq!(modal.error_message.as_deref(), Some("boom"));
+
+        modal.handle_event(key_press(KeyCode::Down)).await;
+
+        assert_eq!(modal.error_message, None);
+    }
+
+    #[tokio::test]
+    async fn add_provider_selection_returns_next_without_error() {
+        let mut modal = ModalConfig::from_config(ShaiConfig::default(), None);
+        // Move selection to the "+ Add new provider" entry
+        modal.handle_event(key_press(KeyCode::Down)).await;
+
+        let action = modal.handle_event(key_press(KeyCode::Enter)).await;
+
+        assert!(matches!(action, NavAction::Next));
+        assert_eq!(modal.error_message, None);
+    }
+
+    #[test]
+    fn multiline_error_is_fully_rendered() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let modal = ModalConfig::from_config(
+            ShaiConfig::default(),
+            Some("Error: first line\nsecond line\nthird line".to_string()),
+        );
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| modal.draw(frame, frame.area()))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        let text = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer.get(x, y).symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(text.contains("first line"), "rendered text was:\n{text}");
+        assert!(text.contains("second line"), "rendered text was:\n{text}");
+        assert!(text.contains("third line"), "rendered text was:\n{text}");
     }
 }

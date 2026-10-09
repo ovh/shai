@@ -60,9 +60,9 @@ When using `-p` with cargo commands, always use the package name (e.g., `cargo b
 
 - The agent loop is in `shai-core/src/agent/` — it manages conversation state, tool execution, and LLM calls.
 - Tools are defined as structs implementing the `Tool` trait (`shai-core/src/tools/types.rs`).
-- Skills are discovered from `.shai/skills/` (project-local) and `~/.config/shai/skills/` (global). Each skill is a directory with a `SKILL.md` file.
+- Skills are discovered from three tiers, in descending priority: `.shai/skills/` (project-local), `~/.config/shai/skills/` (global), and built-in skills embedded in the binary (registered in `shai-core/src/tools/skills/builtin.rs`, source in `shai-core/skills/` — currently only the generic `memory` skill). Shai/Rust-specific sample skills live in `shai-core/examples/skills/` and are not embedded. A skill name in a higher tier shadows the same name in lower tiers. Each skill is a directory with a `SKILL.md` file.
 - Project context is loaded from `AGENTS.md` (canonical) and `SHAI.md` (legacy override) at the git root.
-- Memory facts are stored in both global (`~/.config/shai/memory.md`) and project-local (`.shai/memory.md`) files. Both are merged at read time.
+- Memory uses an index + topic-file layout. Each scope has a `MEMORY.md` index (one timestamped line per fact) plus detail topic files: global at `~/.config/shai/memory/`, project-local at `.shai/memory/`. The `memory_write`/`memory_remove` tools manage the index only; the `memory` built-in skill defines the protocol for topic files. Indexes are capped at 200 lines / 25KB and injected into the system prompt via the `{{MEMORY}}` placeholder.
 - **Plan mode** denies all tool execution (read-only). It is enforced both by a dedicated system prompt (`PLAN_MODE_PROMPT` in `shai-core/src/runners/coder/prompt.rs`) that instructs the LLM to only plan, and by `ClaimManager` which blocks all write tools when `is_plan_mode` is set. Managed via `AgentRequest::PlanMode` / `AgentResponse::PlanModeStatus`.
 - Configs can be imported from external tools (Claude `CLAUDE.md`, Cursor `.cursorrules`/`.cursor/rules`) into `AGENTS.md` via the `import` module (`shai-cli/src/import.rs`).
 - The TUI includes a **session picker** (`shai-cli/src/tui/session_picker.rs`) for browsing and restoring saved sessions.
@@ -78,7 +78,7 @@ When using `-p` with cargo commands, always use the package name (e.g., `cargo b
 
 ## Release Process
 
-1. Update the version in all `Cargo.toml` files (`shai-cli`, `shai-core`, `shai-llm`, `shai-macros`).
+1. Update the version in all `Cargo.toml` files (`shai-cli`, `shai-core`, `shai-llm`, `shai-http`, `shai-macros`).
 2. Run `cargo check` and `cargo test` to verify.
 3. Commit with `chore: release vX.Y.Z`.
 4. Tag with `vX.Y.Z` and push.

@@ -3,9 +3,28 @@ use std::collections::VecDeque;
 use ansi_to_tui::IntoText;
 use ratatui::{
     layout::Rect,
+    style::{Color, Style},
+    text::Text,
     widgets::{Paragraph, Widget, Wrap},
     Frame,
 };
+
+/// Give spans without explicit colors the theme's colors so text stays
+/// readable when the app paints its own background (e.g. light theme on a
+/// dark terminal). Without this, `\x1b[0m` resets render as terminal-default
+/// background, punching holes through the painted app background.
+pub(crate) fn patch_default_style(text: &mut Text<'_>, fg: Color, bg: Color) {
+    for line in &mut text.lines {
+        for span in &mut line.spans {
+            if matches!(span.style.fg, None | Some(Color::Reset)) {
+                span.style.fg = Some(fg);
+            }
+            if matches!(span.style.bg, None | Some(Color::Reset)) {
+                span.style.bg = Some(bg);
+            }
+        }
+    }
+}
 
 /// Maximum number of lines stored in the scrollback buffer
 const MAX_SCROLLBACK_LINES: usize = 5000;
@@ -99,13 +118,19 @@ impl ConversationHistory {
     }
 
     /// Check if scrolled to bottom
-    #[allow(dead_code)] // used by tests
     pub fn at_bottom(&self) -> bool {
         self.scroll_offset == 0
     }
 
-    /// Render the conversation history into the given area
-    pub fn draw(&mut self, f: &mut Frame, area: Rect) {
+    /// Current scroll offset in rendered rows from the bottom (0 = at bottom)
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Render the conversation history into the given area.
+    /// `default_fg` / `default_bg` are applied to any span lacking explicit
+    /// colors so text stays readable on the app-painted background.
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, default_fg: Color, default_bg: Color) {
         if self.lines.is_empty() {
             return;
         }
@@ -128,7 +153,8 @@ impl ConversationHistory {
             .collect::<Vec<_>>()
             .join("\n");
 
-        if let Ok(text) = combined.into_text() {
+        if let Ok(mut text) = combined.into_text() {
+            patch_default_style(&mut text, default_fg, default_bg);
             // Calculate total rendered rows accounting for line wrapping.
             // Each logical line may occupy multiple rendered rows when wrapped
             // to the area width.
@@ -156,6 +182,7 @@ impl ConversationHistory {
                 .min(u16::MAX as usize);
 
             let paragraph = Paragraph::new(text)
+                .style(Style::default().bg(default_bg))
                 .wrap(Wrap { trim: false })
                 .scroll((skip_from_top as u16, 0));
             f.render_widget(paragraph, area);
@@ -164,7 +191,10 @@ impl ConversationHistory {
             let skip_from_top = total_lines
                 .saturating_sub(self.scroll_offset + visible_height)
                 .min(u16::MAX as usize);
-            let paragraph = Paragraph::new(combined)
+            let mut text = Text::from(combined);
+            patch_default_style(&mut text, default_fg, default_bg);
+            let paragraph = Paragraph::new(text)
+                .style(Style::default().bg(default_bg))
                 .wrap(Wrap { trim: false })
                 .scroll((skip_from_top as u16, 0));
             f.render_widget(paragraph, area);

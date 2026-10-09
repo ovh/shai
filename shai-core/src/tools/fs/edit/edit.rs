@@ -221,7 +221,7 @@ impl EditTool {
     }
 }
 
-#[tool(name = "edit", description = r#"Executes find-and-replace operations across one or more files atomically. All edits are applied in memory first; if any edit fails, no files are modified.
+#[tool(name = "edit", description = r#"Executes find-and-replace operations across one or more files. All edits are validated in memory first — if any edit fails, nothing is written to disk. Files are written sequentially once every edit has succeeded.
 
 **Parameters:**
 - `files`: Array of `{ path, edits: [{ old_string, new_string, replace_all?, line_hash?, insert_after_hash? }] }`
@@ -234,7 +234,7 @@ impl EditTool {
 **Critical:**
 - You must first use the `read` tool to inspect any file before editing it.
 - Edits within each file are applied sequentially.
-- The entire operation is atomic — if any edit fails, no files are modified.
+- All edits are validated in memory before any file is written — if any edit fails, no files are modified.
 
 **Examples:**
 Replace text in a file:
@@ -245,7 +245,7 @@ Replace all occurrences:
 ```json
 {"files": [{"path": "src/lib.rs", "edits": [{"old_string": "todo!()", "new_string": "unimplemented!()", "replace_all": true}]}]}
 ```
-Edit multiple files atomically:
+Edit multiple files in a single call:
 ```json
 {"files": [{"path": "src/mod.rs", "edits": [{"old_string": "foo", "new_string": "bar"}]}, {"path": "src/lib.rs", "edits": [{"old_string": "baz", "new_string": "qux"}]}]}
 ```

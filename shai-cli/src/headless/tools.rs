@@ -14,6 +14,8 @@ pub enum ToolName {
     TodoWrite,
     Write,
     Skills,
+    MemoryRemove,
+    MemoryWrite,
 }
 
 impl ToolName {
@@ -37,6 +39,8 @@ impl ToolName {
             ToolName::TodoWrite => "todo_write",
             ToolName::Write => "write",
             ToolName::Skills => "skills",
+            ToolName::MemoryRemove => "memory_remove",
+            ToolName::MemoryWrite => "memory_write",
         }
     }
 
@@ -52,6 +56,8 @@ impl ToolName {
             "todo_write" => Some(ToolName::TodoWrite),
             "write" => Some(ToolName::Write),
             "skills" => Some(ToolName::Skills),
+            "memory_remove" => Some(ToolName::MemoryRemove),
+            "memory_write" => Some(ToolName::MemoryWrite),
             _ => None,
         }
     }
@@ -100,12 +106,9 @@ impl ToolConfig {
         let fs_log = Arc::new(tools::FsOperationLog::new());
         let mut toolbox: Vec<Box<dyn AnyTool>> = Vec::new();
         for tool_name in &self.tools {
-            if let Some(tool) = tools::create_tool(
-                tool_name.name(),
-                fs_log.clone(),
-                todo_storage.clone(),
-                &[],
-            ) {
+            if let Some(tool) =
+                tools::create_tool(tool_name.name(), fs_log.clone(), todo_storage.clone(), &[])
+            {
                 toolbox.push(tool);
             }
         }

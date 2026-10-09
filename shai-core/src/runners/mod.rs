@@ -59,8 +59,10 @@ pub(crate) mod test_helpers {
 
     /// Get the default model for a provider, with fallbacks
     pub async fn get_test_model_for_provider(client: &LlmClient) -> String {
-        client.default_model().await.unwrap_or_else(|_| {
-            match client.provider_name() {
+        client
+            .default_model()
+            .await
+            .unwrap_or_else(|_| match client.provider_name() {
                 "openai" => "gpt-3.5-turbo".to_string(),
                 "anthropic" => "claude-3-haiku-20240307".to_string(),
                 "openrouter" => "openai/gpt-3.5-turbo".to_string(),
@@ -68,7 +70,6 @@ pub(crate) mod test_helpers {
                 "mistral" => "mistral-tiny".to_string(),
                 "ollama" => "llama2".to_string(),
                 _ => "gpt-3.5-turbo".to_string(),
-            }
-        })
+            })
     }
 }

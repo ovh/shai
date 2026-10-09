@@ -1,34 +1,29 @@
 /// Strip ANSI escape sequences from a string.
 ///
 /// Handles CSI (`\x1b[...m`), clear-line (`\x1b[K`), and cursor-movement
-/// sequences that commonly appear in tool output.
+/// sequences that commonly appear in tool output. Operates on `char`s so
+/// multi-byte UTF-8 content (→, ●, …) is preserved — CSI syntax is pure
+/// ASCII and can never collide with UTF-8 continuation bytes.
 pub fn strip_ansi(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
+    let mut chars = input.chars().peekable();
 
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            // Skip escape sequence: ESC [ params final_byte
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'[' {
-                i += 1;
-                while i < bytes.len() {
-                    let c = bytes[i];
-                    // CSI sequences end at byte 0x40..=0x7E
-                    if (0x40..=0x7e).contains(&c) {
-                        i += 1;
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                for c in chars.by_ref() {
+                    // CSI sequences end at a byte in 0x40..=0x7E ('@'..='~')
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
                         break;
                     }
-                    i += 1;
                 }
             } else {
                 // ESC followed by single char (e.g. ESC c)
-                i += 1;
+                chars.next();
             }
         } else {
-            result.push(bytes[i] as char);
-            i += 1;
+            result.push(ch);
         }
     }
 
@@ -60,5 +55,18 @@ mod tests {
     #[test]
     fn test_strip_ansi_clear_line() {
         assert_eq!(strip_ansi("abc\x1b[Kdef"), "abcdef");
+    }
+
+    #[test]
+    fn test_strip_ansi_preserves_multibyte_utf8() {
+        assert_eq!(strip_ansi("héllo → wörld"), "héllo → wörld");
+        assert_eq!(
+            strip_ansi("\x1b[36m→\x1b[0m \x1b[1m●\x1b[0m ◆ ✻ ✅"),
+            "→ ● ◆ ✻ ✅"
+        );
+        assert_eq!(
+            strip_ansi("\x1b[2m░ model on provider\x1b[0m"),
+            "░ model on provider"
+        );
     }
 }

@@ -9,9 +9,22 @@ use ratatui::{
 };
 
 use super::command::CommandRegistry;
+use super::theme::ThemePalette;
 use shai_core::config::tui::{KeyBinding, TuiConfig};
 
-pub struct HelpArea;
+pub struct HelpArea {
+    config: TuiConfig,
+}
+
+impl HelpArea {
+    /// Load the active configuration once so the help panel shows the
+    /// bindings actually in use (config file / legacy env vars), not defaults.
+    pub fn new() -> Self {
+        Self {
+            config: TuiConfig::load(),
+        }
+    }
+}
 
 fn format_binding(binding: &KeyBinding) -> String {
     binding.to_string()
@@ -33,14 +46,17 @@ impl HelpArea {
             } else {
                 format!(" <{}>", cmd.args.join("> <"))
             };
-            lines.push(format!("  {:<14} {}", format!("{}{}", cmd.name, args_suffix), cmd.description));
+            lines.push(format!(
+                "  {:<14} {}",
+                format!("{}{}", cmd.name, args_suffix),
+                cmd.description
+            ));
         }
 
         lines.push(String::new());
         lines.push("  Shortcuts:".to_string());
 
-        let config = TuiConfig::default();
-        let s = &config.shortcuts;
+        let s = &self.config.shortcuts;
         let bindings: [(&str, &str); 10] = [
             ("toggle_theme", "toggle dark/light theme"),
             ("clear_screen", "clear screen / reset viewport"),
@@ -86,10 +102,10 @@ impl HelpArea {
         self.helper_msg().lines().count() as u16
     }
 
-    pub fn draw(&self, f: &mut Frame, area: Rect) {
+    pub fn draw(&self, f: &mut Frame, area: Rect, palette: &ThemePalette) {
         let helper_text = self.helper_msg();
         let x = helper_text.into_text().unwrap();
-        let x = x.style(Style::default().fg(Color::White));
+        let x = x.style(Style::default().fg(palette.input_text));
         f.render_widget(x, area);
     }
 }

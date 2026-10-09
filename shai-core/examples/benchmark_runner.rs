@@ -52,7 +52,7 @@ fn collect_scripts(args: &[String]) -> Vec<PathBuf> {
             if let Ok(entries) = std::fs::read_dir(&path) {
                 let mut json_files: Vec<_> = entries
                     .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+                    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
                     .map(|e| e.path())
                     .collect();
                 json_files.sort();
@@ -101,11 +101,9 @@ fn run_benchmark(script_path: &PathBuf, output_dir: &str) -> Option<Report> {
     let json_str = {
         if let Some(start) = stdout.find(begin_marker) {
             let after_begin = start + begin_marker.len();
-            if let Some(end) = stdout[after_begin..].find(end_marker) {
-                Some(&stdout[after_begin..after_begin + end])
-            } else {
-                None
-            }
+            stdout[after_begin..]
+                .find(end_marker)
+                .map(|end| &stdout[after_begin..after_begin + end])
         } else {
             None
         }

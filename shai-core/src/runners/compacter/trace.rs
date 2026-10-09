@@ -46,16 +46,12 @@ fn estimate_trace_chars(trace: &[ChatMessage]) -> usize {
 ///
 /// Already-compacted entries (starting with `[compacted]`) are skipped.
 fn compact_trace_progressive(
-    trace: &mut Vec<ChatMessage>,
+    trace: &mut [ChatMessage],
     max_chars: usize,
     _tool_metadata: &HashMap<String, ToolCallInfo>,
 ) -> bool {
     let total = estimate_trace_chars(trace);
-    let pct = if max_chars == 0 {
-        0
-    } else {
-        total * 100 / max_chars
-    };
+    let pct = total * 100 / max_chars.max(1);
 
     let target_budget = if pct >= 85 {
         500
@@ -75,15 +71,17 @@ fn compact_trace_progressive(
     let cutoff = trace.len() - keep_recent;
     let mut compacted = false;
 
-    for i in 0..cutoff {
-        if let ChatMessage::Tool { content, .. } = &mut trace[i] {
-            if let ChatMessageContent::Text(s) = content {
-                if s.starts_with("[compacted]") || s.len() <= target_budget {
-                    continue;
-                }
-                *s = compact_generic(s, target_budget);
-                compacted = true;
+    for msg in trace.iter_mut().take(cutoff) {
+        if let ChatMessage::Tool {
+            content: ChatMessageContent::Text(s),
+            ..
+        } = msg
+        {
+            if s.starts_with("[compacted]") || s.len() <= target_budget {
+                continue;
             }
+            *s = compact_generic(s, target_budget);
+            compacted = true;
         }
     }
 
@@ -98,7 +96,7 @@ fn compact_trace_progressive(
 /// that includes the tool name and primary parameter (e.g. file path) so the LLM
 /// knows what was compacted.
 pub fn compact_trace_if_needed(
-    trace: &mut Vec<ChatMessage>,
+    trace: &mut [ChatMessage],
     max_chars: usize,
     tool_metadata: &HashMap<String, ToolCallInfo>,
 ) -> bool {
@@ -119,8 +117,8 @@ pub fn compact_trace_if_needed(
 
     // Collect indices of compactable tool messages (older than keep_recent) with their sizes
     let mut tool_indices: Vec<(usize, usize)> = Vec::new();
-    for i in 0..cutoff {
-        if let ChatMessage::Tool { content, .. } = &trace[i] {
+    for (i, msg) in trace.iter().enumerate().take(cutoff) {
+        if let ChatMessage::Tool { content, .. } = msg {
             let size = match content {
                 ChatMessageContent::Text(s) => s.len(),
                 _ => 0,
@@ -133,7 +131,7 @@ pub fn compact_trace_if_needed(
     }
 
     // Sort by size descending — compact the largest entries first
-    tool_indices.sort_by(|a, b| b.1.cmp(&a.1));
+    tool_indices.sort_by_key(|&(_, size)| std::cmp::Reverse(size));
 
     let mut compacted = false;
     let mut current_total = total;
@@ -236,8 +234,8 @@ mod tests {
         let _ = compact_trace_if_needed(&mut trace, 5000, &metadata);
 
         // Last 100 messages should still be the original content
-        for i in (trace.len().saturating_sub(100))..trace.len() {
-            if let ChatMessage::Tool { content, .. } = &trace[i] {
+        for msg in trace.iter().skip(trace.len().saturating_sub(100)) {
+            if let ChatMessage::Tool { content, .. } = msg {
                 match content {
                     ChatMessageContent::Text(t) => assert_eq!(t, &("x".repeat(1000))),
                     _ => panic!("Expected text content"),
@@ -329,10 +327,12 @@ mod tests {
         // total ≈ 11000 chars, max_chars = 100000 → ~11%
         compact_trace_progressive(&mut trace, 100000, &metadata);
         for msg in &trace {
-            if let ChatMessage::Tool { content, .. } = msg {
-                if let ChatMessageContent::Text(s) = content {
-                    assert_eq!(s.len(), 100, "should not be compacted");
-                }
+            if let ChatMessage::Tool {
+                content: ChatMessageContent::Text(s),
+                ..
+            } = msg
+            {
+                assert_eq!(s.len(), 100, "should not be compacted");
             }
         }
     }
@@ -350,16 +350,18 @@ mod tests {
         }
         compact_trace_progressive(&mut trace, 200000, &metadata);
         // First 20 messages should be shrunk to ≤ 4000
-        for i in 0..20 {
-            if let ChatMessage::Tool { content, .. } = &trace[i] {
-                if let ChatMessageContent::Text(s) = content {
-                    assert!(
-                        s.len() <= 4000,
-                        "entry {} should be ≤4000, got {}",
-                        i,
-                        s.len()
-                    );
-                }
+        for (i, msg) in trace.iter().take(20).enumerate() {
+            if let ChatMessage::Tool {
+                content: ChatMessageContent::Text(s),
+                ..
+            } = msg
+            {
+                assert!(
+                    s.len() <= 4000,
+                    "entry {} should be ≤4000, got {}",
+                    i,
+                    s.len()
+                );
             }
         }
     }
@@ -377,16 +379,18 @@ mod tests {
         }
         compact_trace_progressive(&mut trace, 200000, &metadata);
         // First 50 messages should be shrunk to ≤ 2000
-        for i in 0..50 {
-            if let ChatMessage::Tool { content, .. } = &trace[i] {
-                if let ChatMessageContent::Text(s) = content {
-                    assert!(
-                        s.len() <= 2000,
-                        "entry {} should be ≤2000, got {}",
-                        i,
-                        s.len()
-                    );
-                }
+        for (i, msg) in trace.iter().take(50).enumerate() {
+            if let ChatMessage::Tool {
+                content: ChatMessageContent::Text(s),
+                ..
+            } = msg
+            {
+                assert!(
+                    s.len() <= 2000,
+                    "entry {} should be ≤2000, got {}",
+                    i,
+                    s.len()
+                );
             }
         }
     }
@@ -404,16 +408,18 @@ mod tests {
         }
         compact_trace_progressive(&mut trace, 200000, &metadata);
         // First 80 messages should be shrunk to ≤ 500
-        for i in 0..80 {
-            if let ChatMessage::Tool { content, .. } = &trace[i] {
-                if let ChatMessageContent::Text(s) = content {
-                    assert!(
-                        s.len() <= 500,
-                        "entry {} should be ≤500, got {}",
-                        i,
-                        s.len()
-                    );
-                }
+        for (i, msg) in trace.iter().take(80).enumerate() {
+            if let ChatMessage::Tool {
+                content: ChatMessageContent::Text(s),
+                ..
+            } = msg
+            {
+                assert!(
+                    s.len() <= 500,
+                    "entry {} should be ≤500, got {}",
+                    i,
+                    s.len()
+                );
             }
         }
     }
@@ -436,10 +442,12 @@ mod tests {
         }
         compact_trace_progressive(&mut trace, 200000, &metadata);
         // Already-compacted entry should be unchanged
-        if let ChatMessage::Tool { content, .. } = &trace[0] {
-            if let ChatMessageContent::Text(s) = content {
-                assert_eq!(s, "[compacted] read(src/main.rs)");
-            }
+        if let ChatMessage::Tool {
+            content: ChatMessageContent::Text(s),
+            ..
+        } = &trace[0]
+        {
+            assert_eq!(s, "[compacted] read(src/main.rs)");
         }
     }
 
@@ -455,11 +463,13 @@ mod tests {
         }
         compact_trace_progressive(&mut trace, 200000, &metadata);
         // Last 100 messages should be unchanged
-        for i in 20..120 {
-            if let ChatMessage::Tool { content, .. } = &trace[i] {
-                if let ChatMessageContent::Text(s) = content {
-                    assert_eq!(s.len(), 1000, "recent entry {} should be unchanged", i);
-                }
+        for (i, msg) in trace.iter().enumerate().skip(20).take(100) {
+            if let ChatMessage::Tool {
+                content: ChatMessageContent::Text(s),
+                ..
+            } = msg
+            {
+                assert_eq!(s.len(), 1000, "recent entry {} should be unchanged", i);
             }
         }
     }

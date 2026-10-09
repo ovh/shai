@@ -5,6 +5,8 @@ use ansi_to_tui::IntoText;
 use arboard::Clipboard;
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::text::Span;
 use ratatui::widgets::Clear;
 
 use super::input::{AgentMode, UserAction};
@@ -53,7 +55,6 @@ impl App<'_> {
                     }
                     _ => {}
                 }
-                self.renderer.history_mut().scroll_to_bottom();
                 self.handle_key_event(key_event).await?;
             }
             _ => {}
@@ -61,7 +62,10 @@ impl App<'_> {
         Ok(())
     }
 
-    async fn handle_session_picker_key(&mut self, key_event: crossterm::event::KeyEvent) -> io::Result<()> {
+    async fn handle_session_picker_key(
+        &mut self,
+        key_event: crossterm::event::KeyEvent,
+    ) -> io::Result<()> {
         use super::session_picker::SessionPickerAction;
 
         let picker = self.ui_state.session_picker.as_mut().unwrap();
@@ -85,11 +89,9 @@ impl App<'_> {
                         }
 
                         let agent_name = self.agent_meta.name().map(|s| s.to_string());
-                        self.start_agent(agent_name.as_deref())
-                            .await
-                            .map_err(|e| {
-                                io::Error::other(format!("Failed to start agent: {}", e))
-                            })?;
+                        self.start_agent(agent_name.as_deref()).await.map_err(|e| {
+                            io::Error::other(format!("Failed to start agent: {}", e))
+                        })?;
 
                         if let Some(ref agent) = self.agent {
                             let _ = agent.controller.load_trace(trace.clone()).await;
@@ -119,7 +121,10 @@ impl App<'_> {
         Ok(())
     }
 
-    async fn handle_agent_picker_key(&mut self, key_event: crossterm::event::KeyEvent) -> io::Result<()> {
+    async fn handle_agent_picker_key(
+        &mut self,
+        key_event: crossterm::event::KeyEvent,
+    ) -> io::Result<()> {
         use super::agent_picker::AgentPickerAction;
 
         let picker = self.ui_state.agent_picker.as_mut().unwrap();
@@ -130,9 +135,9 @@ impl App<'_> {
                     &format!("Switching to agent '{}'...", name),
                     Duration::from_secs(2),
                 );
-                self.swap_agent(Some(&name)).await.map_err(|e| {
-                    io::Error::other(format!("Failed to switch agent: {}", e))
-                })?;
+                self.swap_agent(Some(&name))
+                    .await
+                    .map_err(|e| io::Error::other(format!("Failed to switch agent: {}", e)))?;
                 self.input.alert_msg(
                     &format!("Switched to agent '{}'", name),
                     Duration::from_secs(2),
@@ -146,7 +151,10 @@ impl App<'_> {
         Ok(())
     }
 
-    pub(crate) async fn handle_key_event(&mut self, key_event: crossterm::event::KeyEvent) -> io::Result<()> {
+    pub(crate) async fn handle_key_event(
+        &mut self,
+        key_event: crossterm::event::KeyEvent,
+    ) -> io::Result<()> {
         if self.shortcuts.matches(&key_event, self.shortcuts.exit()) {
             self.ui_state.exit = true;
             return Ok(());
@@ -160,14 +168,30 @@ impl App<'_> {
             return self.handle_agent_picker_key(key_event).await;
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.toggle_theme()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.toggle_theme())
+        {
             self.status_bar.theme_mut().toggle();
             let new_palette = self.status_bar.palette();
             self.input.set_palette(new_palette);
+            // Keep the markdown formatter in sync with the toggled theme unless
+            // the user pinned an explicit markdown_skin override in the config.
+            let config = shai_core::config::tui::TuiConfig::load();
+            if config.markdown_skin.is_none() {
+                let pref = match *self.status_bar.theme() {
+                    super::theme::Theme::Dark => shai_core::config::tui::ThemePreference::Dark,
+                    super::theme::Theme::Light => shai_core::config::tui::ThemePreference::Light,
+                };
+                self.renderer.set_markdown_theme(pref);
+            }
             return Ok(());
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.clear_screen()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.clear_screen())
+        {
             if let Some(ref mut terminal) = self.terminal {
                 terminal.clear()?;
             }
@@ -175,7 +199,10 @@ impl App<'_> {
             return Ok(());
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.regenerate()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.regenerate())
+        {
             if let Some(ref agent) = self.agent {
                 let _ = agent.controller.regenerate().await;
                 self.notify("Regenerating last response...", Duration::from_secs(2));
@@ -183,7 +210,10 @@ impl App<'_> {
             return Ok(());
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.copy_response()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.copy_response())
+        {
             let last_response = self.agent_state.session_manager().last_assistant_response();
             if !last_response.is_empty() {
                 if let Ok(mut ctx) = Clipboard::new() {
@@ -196,7 +226,10 @@ impl App<'_> {
             return Ok(());
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.cycle_agent_mode()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.cycle_agent_mode())
+        {
             let mode = self.input.cycle_agent_mode();
             self.status_bar.set_agent_mode(&mode.status_bar_str());
             if let Some(ref agent) = self.agent {
@@ -218,7 +251,10 @@ impl App<'_> {
             return Ok(());
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.expand_tool()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.expand_tool())
+        {
             if let Some(output) = self
                 .agent_state
                 .tool_tracker()
@@ -230,14 +266,18 @@ impl App<'_> {
                     .tool_tracker()
                     .last_file_path()
                     .map(|s| s.to_string());
+                self.suspend_event_reader();
                 let mut viewer = AlternateScreenViewer::new(output, file_path);
                 let _ = viewer.run().await;
+                self.resume_event_reader();
             }
             return Ok(());
         }
 
         if key_event.code == KeyCode::Char('r')
-            && key_event.modifiers.contains(crossterm::event::KeyModifiers::ALT)
+            && key_event
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::ALT)
         {
             let raw_text = self.renderer.history_mut().raw_text();
             if raw_text.trim().is_empty() {
@@ -245,20 +285,28 @@ impl App<'_> {
                 return Ok(());
             }
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+            self.suspend_event_reader();
             let mut viewer = AlternateScreenViewer::new(raw_text, None);
             let _ = viewer.run().await;
+            self.resume_event_reader();
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
             return Ok(());
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.session_picker()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.session_picker())
+        {
             let sessions = shai_core::session::SessionPersist::list_sessions().unwrap_or_default();
             self.ui_state.session_picker =
                 Some(SessionPicker::new(sessions, self.status_bar.palette()));
             return Ok(());
         }
 
-        if self.shortcuts.matches(&key_event, self.shortcuts.prompt_picker()) {
+        if self
+            .shortcuts
+            .matches(&key_event, self.shortcuts.prompt_picker())
+        {
             let prompts = shai_core::tools::prompts::discover_prompts();
             let active = shai_core::tools::prompts::load_active_prompts_from_disk();
             let mut picker = crate::tui::prompt_picker::PromptPicker::new(
@@ -266,15 +314,17 @@ impl App<'_> {
                 &active,
                 self.status_bar.palette(),
             );
-            match picker.run().await {
-                Ok(crate::tui::prompt_picker::PromptPickerAction::Selected(selected)) => {
-                    if let Some(ref agent) = self.agent {
-                        let _ = agent.controller.set_active_prompts(selected.clone()).await;
-                        let _ = shai_core::tools::prompts::save_active_prompts(&selected);
-                        self.notify("System prompts updated", std::time::Duration::from_secs(2));
-                    }
+            self.suspend_event_reader();
+            let picker_result = picker.run().await;
+            self.resume_event_reader();
+            if let Ok(crate::tui::prompt_picker::PromptPickerAction::Selected(selected)) =
+                picker_result
+            {
+                if let Some(ref agent) = self.agent {
+                    let _ = agent.controller.set_active_prompts(selected.clone()).await;
+                    let _ = shai_core::tools::prompts::save_active_prompts(&selected);
+                    self.notify("System prompts updated", std::time::Duration::from_secs(2));
                 }
-                _ => {}
             }
             return Ok(());
         }
@@ -305,12 +355,14 @@ impl App<'_> {
                     ) {
                         let _ = agent.controller.sudo().await;
                         self.input.set_agent_mode(AgentMode::Auto);
-                        self.status_bar.set_agent_mode(&AgentMode::Auto.status_bar_str());
+                        self.status_bar
+                            .set_agent_mode(&AgentMode::Auto.status_bar_str());
                     }
-                    if let Err(_) = agent
+                    if agent
                         .controller
                         .response_permission_request(request_id, choice)
                         .await
+                        .is_err()
                     {
                         self.notify(
                             "channel with agent closed. Please restart the app",
@@ -349,23 +401,30 @@ impl App<'_> {
                     .unwrap_or(24);
 
                 if widget.height() > terminal_height.saturating_sub(5) {
-                    let action =
-                        match super::perm_alt_screen::AlternateScreenPermissionModal::new(&widget, palette) {
-                            Ok(mut modal) => modal.run().await.unwrap_or_else(|_| {
-                                super::perm::PermissionModalAction::Response {
-                                    request_id: request_id.clone(),
-                                    choice: shai_core::agent::PermissionResponse::Deny,
-                                }
-                            }),
-                            Err(_) => super::perm::PermissionModalAction::Response {
+                    // Owned copy so the borrow of `self.agent_state` ends
+                    // before the mutable borrow below.
+                    let request_id = request_id.clone();
+                    self.suspend_event_reader();
+                    let action = match super::perm_alt_screen::AlternateScreenPermissionModal::new(
+                        &widget, palette,
+                    ) {
+                        Ok(mut modal) => modal.run().await.unwrap_or_else(|_| {
+                            super::perm::PermissionModalAction::Response {
                                 request_id: request_id.clone(),
                                 choice: shai_core::agent::PermissionResponse::Deny,
-                            },
-                        };
+                            }
+                        }),
+                        Err(_) => super::perm::PermissionModalAction::Response {
+                            request_id: request_id.clone(),
+                            choice: shai_core::agent::PermissionResponse::Deny,
+                        },
+                    };
+                    self.resume_event_reader();
                     self.handle_permission_action(action).await?;
                 } else {
-                    self.ui_state.modal_state =
-                        AppModalState::PermissionModal { widget };
+                    self.ui_state.modal_state = AppModalState::PermissionModal {
+                        widget: Box::new(widget),
+                    };
                 }
             }
             AppModalState::PermissionModal { .. }
@@ -388,8 +447,15 @@ impl App<'_> {
                 }
             }
             UserAction::UserInput { input } => {
+                // Submitting a message implies the user wants to follow the conversation
+                self.renderer.history_mut().scroll_to_bottom();
                 if let Some(ref agent) = self.agent {
-                    if agent.controller.send_user_input(input.clone()).await.is_err() {
+                    if agent
+                        .controller
+                        .send_user_input(input.clone())
+                        .await
+                        .is_err()
+                    {
                         self.notify(
                             "channel with agent closed. Please restart the app",
                             Duration::from_secs(3),
@@ -413,38 +479,104 @@ impl App<'_> {
 
         let running_tools_height = self.agent_state.tool_tracker().len() as u16;
 
+        // Capture state before the draw closure to avoid conflicting borrows
+        let at_bottom = self.renderer.history().at_bottom();
+        let scroll_offset = self.renderer.history().scroll_offset();
+        let todos: Vec<String> = self
+            .agent_state
+            .todos()
+            .iter()
+            .map(|t| t.format_for_display())
+            .collect();
+        let todos_height = todos.len() as u16;
+        let palette = self.status_bar.palette();
+        let indicator_color = palette.status;
+
         if let Some(ref mut terminal) = self.terminal {
             terminal.draw(|frame| {
-                let [_, history_area, _, tools_area, modal_area, statusbar_area] =
+                // Paint the app background so light theme works on dark terminals
+                let bg = Style::default().bg(palette.background);
+                let full_area = frame.area();
+                frame.buffer_mut().set_style(full_area, bg);
+
+                let [top_area, history_area, _, todos_area, tools_area, modal_area, statusbar_area] =
                     Layout::vertical([
                         Constraint::Length(1),
                         Constraint::Fill(1),
                         Constraint::Length(2),
+                        Constraint::Length(todos_height),
                         Constraint::Length(running_tools_height),
                         Constraint::Length(modal_height),
                         Constraint::Length(1),
                     ])
                     .areas(frame.area());
 
-                self.renderer.history_mut().draw(frame, history_area);
+                if !at_bottom {
+                    let hint = format!(
+                        "\u{25B2} {} rows up \u{2014} PgDn to return",
+                        scroll_offset
+                    );
+                    let pad = top_area
+                        .width
+                        .saturating_sub(hint.chars().count() as u16 + 1);
+                    let line = ratatui::text::Line::from(vec![
+                        Span::raw(" ".repeat(pad as usize)),
+                        Span::styled(hint, Style::default().fg(indicator_color)),
+                    ]);
+                    frame.render_widget(line, top_area);
+                }
+
+                self.renderer.history_mut().draw(
+                    frame,
+                    history_area,
+                    palette.input_text,
+                    palette.background,
+                );
+
+                if !todos.is_empty() {
+                    let layout: std::rc::Rc<[Rect]> =
+                        Layout::vertical(vec![Constraint::Length(1); todos.len()])
+                            .split(todos_area);
+                    for (todo, &area) in todos.iter().zip(&*layout) {
+                        if let Ok(mut text) = todo.into_text() {
+                            super::history::patch_default_style(
+                                &mut text,
+                                palette.input_text,
+                                palette.background,
+                            );
+                            frame.render_widget(text, area);
+                        }
+                    }
+                }
 
                 if !self.agent_state.tool_tracker().is_empty() {
                     let layout: std::rc::Rc<[Rect]> =
-                        Layout::vertical(vec![Constraint::Length(1); self.agent_state.tool_tracker().len()])
-                            .split(tools_area);
-                    for ((tool_id, tc), &area) in self
-                        .agent_state
-                        .tool_tracker()
-                        .iter()
-                        .zip(&*layout)
+                        Layout::vertical(vec![
+                            Constraint::Length(1);
+                            self.agent_state.tool_tracker().len()
+                        ])
+                        .split(tools_area);
+                    for ((tool_id, tc), &area) in
+                        self.agent_state.tool_tracker().iter().zip(&*layout)
                     {
-                        let elapsed = self.agent_state.tool_tracker().elapsed(tool_id).unwrap_or_default();
+                        let elapsed = self
+                            .agent_state
+                            .tool_tracker()
+                            .elapsed(tool_id)
+                            .unwrap_or_default();
                         let secs = elapsed.as_secs();
                         let millis = elapsed.subsec_millis() / 10;
                         let tool_str = self.renderer.formatter().format_tool_running(tc);
                         let tool_with_time =
                             format!("{} ({:.1}s)", tool_str, secs as f64 + millis as f64 / 100.0);
-                        frame.render_widget(tool_with_time.into_text().unwrap(), area);
+                        if let Ok(mut text) = tool_with_time.into_text() {
+                            super::history::patch_default_style(
+                                &mut text,
+                                palette.input_text,
+                                palette.background,
+                            );
+                            frame.render_widget(text, area);
+                        }
                     }
                 }
 
@@ -463,6 +595,7 @@ impl App<'_> {
                         height: frame.area().height.saturating_sub(2),
                     };
                     frame.render_widget(Clear, picker_area);
+                    frame.buffer_mut().set_style(picker_area, bg);
                     picker.draw(frame, picker_area);
                 }
 
@@ -474,6 +607,7 @@ impl App<'_> {
                         height: frame.area().height.saturating_sub(2),
                     };
                     frame.render_widget(Clear, picker_area);
+                    frame.buffer_mut().set_style(picker_area, bg);
                     picker.draw(frame, picker_area);
                 }
             })?;

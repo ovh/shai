@@ -1,4 +1,5 @@
 use super::api::*;
+use crate::error::{retry_after_from_headers, RateLimitedError};
 use crate::provider::{EnvVar, LlmError, LlmProvider, LlmStream, ProviderInfo};
 use async_trait::async_trait;
 use futures::{stream, StreamExt};
@@ -30,9 +31,26 @@ impl AnthropicProvider {
     /// Create Anthropic provider from environment variables
     /// Returns None if required environment variables are not set
     pub fn from_env() -> Option<Self> {
-        std::env::var("ANTHROPIC_API_KEY")
-            .ok()
-            .map(|api_key| Self::new(api_key))
+        std::env::var("ANTHROPIC_API_KEY").ok().map(Self::new)
+    }
+
+    /// Build an error for a failed Anthropic HTTP response.
+    ///
+    /// Rate-limiting statuses (429, 503, 529) are surfaced as [`RateLimitedError`]
+    /// so the retry logic can honor the `Retry-After` header.
+    fn http_error(
+        status: reqwest::StatusCode,
+        headers: &reqwest::header::HeaderMap,
+        body: String,
+    ) -> LlmError {
+        match status.as_u16() {
+            429 | 503 | 529 => Box::new(RateLimitedError::new(
+                status.as_u16(),
+                retry_after_from_headers(headers),
+                format!("Anthropic API error: {}", body),
+            )),
+            _ => format!("Anthropic API error (HTTP {}): {}", status.as_u16(), body).into(),
+        }
     }
 
     async fn parse_anthropic_stream(response: reqwest::Response) -> Result<LlmStream, LlmError> {
@@ -46,7 +64,7 @@ impl AnthropicProvider {
                 }
                 Err(e) => vec![Err(Box::new(e) as LlmError)],
             })
-            .flat_map(|results| stream::iter(results));
+            .flat_map(stream::iter);
 
         Ok(Box::new(Box::pin(parsed_stream)))
     }
@@ -59,10 +77,10 @@ impl AnthropicProvider {
         for line in chunk.lines() {
             let line = line.trim();
 
-            if line.starts_with("event: ") {
-                current_event_type = Some(line[7..].to_string());
-            } else if line.starts_with("data: ") {
-                current_data = line[6..].to_string();
+            if let Some(event_type) = line.strip_prefix("event: ") {
+                current_event_type = Some(event_type.to_string());
+            } else if let Some(data) = line.strip_prefix("data: ") {
+                current_data = data.to_string();
             } else if line.is_empty() && current_event_type.is_some() {
                 // End of SSE event
                 if let Some(event_type) = current_event_type.take() {
@@ -497,7 +515,7 @@ impl LlmProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post(&format!("{}/messages", ANTHROPIC_API_BASE))
+            .post(format!("{}/messages", ANTHROPIC_API_BASE))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
@@ -506,8 +524,10 @@ impl LlmProvider for AnthropicProvider {
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let headers = response.headers().clone();
             let error_text = response.text().await?;
-            return Err(format!("Anthropic API error: {}", error_text).into());
+            return Err(Self::http_error(status, &headers, error_text));
         }
 
         let anthropic_response: serde_json::Value = response.json().await?;
@@ -521,7 +541,7 @@ impl LlmProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post(&format!("{}/messages", ANTHROPIC_API_BASE))
+            .post(format!("{}/messages", ANTHROPIC_API_BASE))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
@@ -530,8 +550,10 @@ impl LlmProvider for AnthropicProvider {
             .await?;
 
         if !response.status().is_success() {
+            let status = response.status();
+            let headers = response.headers().clone();
             let error_text = response.text().await?;
-            return Err(format!("Anthropic API streaming error: {}", error_text).into());
+            return Err(Self::http_error(status, &headers, error_text));
         }
 
         Self::parse_anthropic_stream(response).await
@@ -555,5 +577,48 @@ impl LlmProvider for AnthropicProvider {
             display_name: "Anthropic (Claude 3.5 Sonnet, Claude 3 Opus)",
             env_vars: vec![EnvVar::required("ANTHROPIC_API_KEY", "Anthropic API key")],
         }
+    }
+}
+
+#[cfg(test)]
+mod http_error_tests {
+    use super::AnthropicProvider;
+    use crate::error::RateLimitedError;
+    use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+    use reqwest::StatusCode;
+    use std::time::Duration;
+
+    fn headers_with_retry_after(value: &'static str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static(value));
+        headers
+    }
+
+    #[test]
+    fn rate_limited_statuses_carry_retry_after() {
+        for status in [
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::from_u16(529).unwrap(),
+        ] {
+            let headers = headers_with_retry_after("3");
+            let error = AnthropicProvider::http_error(status, &headers, "overloaded".into());
+            let rate_limited = error
+                .downcast_ref::<RateLimitedError>()
+                .expect("expected RateLimitedError");
+            assert_eq!(rate_limited.status, status.as_u16());
+            assert_eq!(rate_limited.retry_after, Some(Duration::from_secs(3)));
+            assert!(rate_limited.message.contains("overloaded"));
+        }
+    }
+
+    #[test]
+    fn other_statuses_stay_plain_errors() {
+        let headers = headers_with_retry_after("3");
+        let error =
+            AnthropicProvider::http_error(StatusCode::UNAUTHORIZED, &headers, "bad key".into());
+        assert!(error.downcast_ref::<RateLimitedError>().is_none());
+        assert!(error.to_string().contains("401"));
+        assert!(error.to_string().contains("bad key"));
     }
 }

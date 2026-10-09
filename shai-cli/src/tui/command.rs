@@ -318,8 +318,7 @@ impl CommandRegistry {
                 match sessions {
                     Ok(sessions) if !sessions.is_empty() => {
                         let palette = app.status_bar.palette();
-                        app.ui_state.session_picker =
-                            Some(SessionPicker::new(sessions, palette));
+                        app.ui_state.session_picker = Some(SessionPicker::new(sessions, palette));
                     }
                     Ok(_) => {
                         app.notify("No saved sessions found", Duration::from_secs(2));
@@ -332,61 +331,57 @@ impl CommandRegistry {
                     }
                 }
             }
-            "/pwd" => {
-                match std::env::current_dir() {
-                    Ok(cwd) => {
-                        app.renderer
-                            .history_mut()
-                            .add_system_text(&cwd.display().to_string());
-                    }
-                    Err(_) => {
-                        app.notify("Failed to get current directory", Duration::from_secs(3));
-                    }
+            "/pwd" => match std::env::current_dir() {
+                Ok(cwd) => {
+                    app.renderer
+                        .history_mut()
+                        .add_system_text(&cwd.display().to_string());
                 }
-            }
-            "/latest" => {
-                match shai_core::session::SessionPersist::list_sessions() {
-                    Ok(sessions) if !sessions.is_empty() => {
-                        let session = &sessions[0];
-                        app.notify(
-                            &format!("Restoring session {}...", &session.session_id[..8]),
-                            Duration::from_secs(2),
-                        );
-
-                        if let Some(agent) = app.agent.take() {
-                            let _ = agent.controller.terminate().await;
-                        }
-
-                        let agent_name = app.agent_meta.name().map(|s| s.to_string());
-                        app.start_agent(agent_name.as_deref()).await.map_err(|e| {
-                            io::Error::other(format!("Failed to start agent: {}", e))
-                        })?;
-
-                        if let Some(ref agent) = app.agent {
-                            let _ = agent.controller.load_trace(session.trace.clone()).await;
-                        }
-
-                        app.agent_state
-                            .session_manager_mut()
-                            .set_session_id(&session.session_id);
-                        app.render_restored_trace(&session.trace);
-
-                        app.notify(
-                            &format!("Session {} restored", &session.session_id[..8]),
-                            Duration::from_secs(2),
-                        );
-                    }
-                    Ok(_) => {
-                        app.notify("No saved sessions found", Duration::from_secs(2));
-                    }
-                    Err(e) => {
-                        app.notify(
-                            &format!("Failed to list sessions: {}", e),
-                            Duration::from_secs(3),
-                        );
-                    }
+                Err(_) => {
+                    app.notify("Failed to get current directory", Duration::from_secs(3));
                 }
-            }
+            },
+            "/latest" => match shai_core::session::SessionPersist::list_sessions() {
+                Ok(sessions) if !sessions.is_empty() => {
+                    let session = &sessions[0];
+                    app.notify(
+                        &format!("Restoring session {}...", &session.session_id[..8]),
+                        Duration::from_secs(2),
+                    );
+
+                    if let Some(agent) = app.agent.take() {
+                        let _ = agent.controller.terminate().await;
+                    }
+
+                    let agent_name = app.agent_meta.name().map(|s| s.to_string());
+                    app.start_agent(agent_name.as_deref())
+                        .await
+                        .map_err(|e| io::Error::other(format!("Failed to start agent: {}", e)))?;
+
+                    if let Some(ref agent) = app.agent {
+                        let _ = agent.controller.load_trace(session.trace.clone()).await;
+                    }
+
+                    app.agent_state
+                        .session_manager_mut()
+                        .set_session_id(&session.session_id);
+                    app.render_restored_trace(&session.trace);
+
+                    app.notify(
+                        &format!("Session {} restored", &session.session_id[..8]),
+                        Duration::from_secs(2),
+                    );
+                }
+                Ok(_) => {
+                    app.notify("No saved sessions found", Duration::from_secs(2));
+                }
+                Err(e) => {
+                    app.notify(
+                        &format!("Failed to list sessions: {}", e),
+                        Duration::from_secs(3),
+                    );
+                }
+            },
             "/skills" => {
                 let skills = shai_core::tools::skills::discovery::discover_skills();
                 if skills.is_empty() {
@@ -395,11 +390,17 @@ impl CommandRegistry {
                     let mut msg = String::from("\x1b[1mAvailable skills:\x1b[0m\n");
                     for skill in &skills {
                         if skill.description.is_empty() {
-                            msg.push_str(&format!("  \x1b[36m\u{2022}\x1b[0m {}\n", skill.name));
+                            msg.push_str(&format!(
+                                "  \x1b[36m\u{2022}\x1b[0m {} \x1b[90m({})\x1b[0m\n",
+                                skill.name,
+                                skill.source()
+                            ));
                         } else {
                             msg.push_str(&format!(
-                                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {}\n",
-                                skill.name, skill.description
+                                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {} \x1b[90m({})\x1b[0m\n",
+                                skill.name,
+                                skill.description,
+                                skill.source()
                             ));
                         }
                     }
@@ -407,13 +408,20 @@ impl CommandRegistry {
                 }
             }
             "/tools" => {
-                let tools = app.agent.as_ref().map(|a| a.tools.clone()).unwrap_or_default();
+                let tools = app
+                    .agent
+                    .as_ref()
+                    .map(|a| a.tools.clone())
+                    .unwrap_or_default();
                 if tools.is_empty() {
                     app.notify("No tools available.", Duration::from_secs(2));
                 } else {
                     let mut msg = String::from("\x1b[1mAvailable tools:\x1b[0m\n");
                     for (name, desc) in &tools {
-                        msg.push_str(&format!("  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {}\n", name, desc));
+                        msg.push_str(&format!(
+                            "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {}\n",
+                            name, desc
+                        ));
                     }
                     app.renderer.history_mut().add_system_text(&msg);
                 }
@@ -442,9 +450,14 @@ impl CommandRegistry {
                     let _ = agent.handle.await;
                 }
 
-                // Run auth TUI
+                // Run auth TUI. Suspend the main event reader first: crossterm
+                // only supports one event reader at a time, and the idle main
+                // reader would keep its lock held, deadlocking the auth view's
+                // own EventStream (black screen until a key press).
+                app.suspend_event_reader();
                 let mut auth = crate::tui::auth::auth::AppAuth::new();
                 auth.run().await;
+                app.resume_event_reader();
 
                 // Recreate agent
                 app.start_agent(agent_name.as_deref()).await.ok();
@@ -458,8 +471,9 @@ impl CommandRegistry {
                 app.notify("Provider configuration updated", Duration::from_secs(2));
             }
             "/agent" => {
-                app.ui_state.agent_picker =
-                    Some(super::agent_picker::AgentPicker::new(app.status_bar.palette()));
+                app.ui_state.agent_picker = Some(super::agent_picker::AgentPicker::new(
+                    app.status_bar.palette(),
+                ));
             }
             _ => {
                 app.notify("command unknown", Duration::from_secs(1));

@@ -32,6 +32,6 @@ pub struct FileEdit {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct EditToolParams {
     /// Array of files, each with their own edit operations.
-    /// All edits are applied atomically — if any edit fails, no files are modified.
+    /// All edits are validated in memory first — if any edit fails, no files are modified.
     pub files: Vec<FileEdit>,
 }

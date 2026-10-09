@@ -114,7 +114,7 @@ impl AgentCore {
                     // Emit tool call started event
                     if let Some(tx) = public_event_tx.clone() {
                         let _ = tx.send(AgentEvent::ToolCallStarted {
-                            timestamp: start.clone(),
+                            timestamp: start,
                             call: call.clone(),
                         });
                     }
@@ -310,7 +310,7 @@ impl AgentCore {
                             },
                         );
                     }
-                    let _ = {
+                    {
                         trace.write().await.push(ChatMessage::Tool {
                             tool_call_id: call.tool_call_id.clone(),
                             content: ChatMessageContent::Text(compacted_output.clone()),
@@ -323,7 +323,7 @@ impl AgentCore {
                     if let Some(tx) = public_event_tx.clone() {
                         let _ = tx.send(AgentEvent::ToolCallCompleted {
                             duration: Utc::now() - start,
-                            call: call,
+                            call,
                             result,
                             original_bytes: raw_output.len(),
                             compacted_bytes: compacted_output.len(),
@@ -356,12 +356,12 @@ impl AgentCore {
     ) -> JoinHandle<ToolResult> {
         tokio::spawn(async move {
             // Read-only tools are always allowed without permission
-            // Plan mode allows all tools (the system prompt prevents writes)
             // Sudo mode allows all tools without asking
+            // Plan mode is read-only: write-capable tools fall through to the
+            // permission prompt instead of being auto-allowed
             let can_run = tool.capabilities().is_empty()
-                || tool.capabilities() == &[ToolCapability::Read]
-                || claims.read().await.is_sudo()
-                || claims.read().await.is_plan_mode();
+                || tool.capabilities() == [ToolCapability::Read]
+                || claims.read().await.is_sudo();
 
             // request permission if needed (|| is short-circuiting, so won't call if can_run is true)
             let can_run = can_run
@@ -483,5 +483,178 @@ impl AgentCore {
                     })
                     .map(|tool| (tool, tool_call))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::{create_tool, FsOperationLog, TodoStorage};
+
+    fn make_tool(name: &str) -> Arc<dyn AnyTool> {
+        let fs_log = Arc::new(FsOperationLog::new());
+        let todo_storage = Arc::new(TodoStorage::new());
+        Arc::from(
+            create_tool(name, fs_log, todo_storage, &[])
+                .unwrap_or_else(|| panic!("create_tool returned None for '{}'", name)),
+        )
+    }
+
+    fn make_call(tool_name: &str, parameters: serde_json::Value) -> ToolCall {
+        ToolCall {
+            tool_call_id: Uuid::new_v4().to_string(),
+            tool_name: tool_name.to_string(),
+            parameters,
+        }
+    }
+
+    async fn exec_non_interactive(
+        tool: Arc<dyn AnyTool>,
+        call: ToolCall,
+        claims: ClaimManager,
+    ) -> ToolResult {
+        let (_internal_tx, internal_rx) = broadcast::channel(16);
+        let handle = AgentCore::spawn_tool_exec(
+            tool,
+            call,
+            CancellationToken::new(),
+            Arc::new(RwLock::new(claims)),
+            None,
+            internal_rx,
+        );
+        handle.await.expect("tool execution task panicked")
+    }
+
+    fn plan_mode_claims() -> ClaimManager {
+        let mut claims = ClaimManager::new();
+        claims.plan_mode();
+        claims
+    }
+
+    async fn respond_to_permission_request(
+        event_rx: &mut broadcast::Receiver<AgentEvent>,
+        internal_tx: &broadcast::Sender<InternalAgentEvent>,
+        response: PermissionResponse,
+    ) {
+        let request_id = loop {
+            match event_rx.recv().await.expect("event channel closed") {
+                AgentEvent::PermissionRequired { request_id, .. } => break request_id,
+                _ => continue,
+            }
+        };
+        internal_tx
+            .send(InternalAgentEvent::PermissionResponseReceived {
+                request_id,
+                response,
+            })
+            .expect("internal channel closed");
+    }
+
+    #[tokio::test]
+    async fn plan_mode_denies_write_tool_when_non_interactive() {
+        let result = exec_non_interactive(
+            make_tool("memory_write"),
+            make_call(
+                "memory_write",
+                serde_json::json!({"path": "topic.md", "content": "x"}),
+            ),
+            plan_mode_claims(),
+        )
+        .await;
+        assert!(result.is_denied());
+    }
+
+    #[tokio::test]
+    async fn plan_mode_denies_bash_when_non_interactive() {
+        let result = exec_non_interactive(
+            make_tool("bash"),
+            make_call(
+                "bash",
+                serde_json::json!({"command": "echo plan-mode-test"}),
+            ),
+            plan_mode_claims(),
+        )
+        .await;
+        assert!(result.is_denied());
+    }
+
+    #[tokio::test]
+    async fn plan_mode_prompts_for_bash_and_respects_denial() {
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let (internal_tx, internal_rx) = broadcast::channel(16);
+        let handle = AgentCore::spawn_tool_exec(
+            make_tool("bash"),
+            make_call(
+                "bash",
+                serde_json::json!({"command": "echo plan-mode-test"}),
+            ),
+            CancellationToken::new(),
+            Arc::new(RwLock::new(plan_mode_claims())),
+            Some(event_tx),
+            internal_rx,
+        );
+
+        respond_to_permission_request(&mut event_rx, &internal_tx, PermissionResponse::Deny).await;
+
+        let result = handle.await.expect("tool execution task panicked");
+        assert!(result.is_denied());
+    }
+
+    #[tokio::test]
+    async fn plan_mode_runs_bash_after_user_approval() {
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        let (internal_tx, internal_rx) = broadcast::channel(16);
+        let handle = AgentCore::spawn_tool_exec(
+            make_tool("bash"),
+            make_call(
+                "bash",
+                serde_json::json!({"command": "echo plan-mode-test"}),
+            ),
+            CancellationToken::new(),
+            Arc::new(RwLock::new(plan_mode_claims())),
+            Some(event_tx),
+            internal_rx,
+        );
+
+        respond_to_permission_request(&mut event_rx, &internal_tx, PermissionResponse::Allow).await;
+
+        let result = handle.await.expect("tool execution task panicked");
+        assert!(result.is_success());
+        assert!(result.to_string().contains("plan-mode-test"));
+    }
+
+    #[tokio::test]
+    async fn plan_mode_auto_allows_read_only_tools() {
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
+        std::fs::File::create(dir.path().join("file.txt")).expect("failed to create file");
+
+        let result = exec_non_interactive(
+            make_tool("ls"),
+            make_call(
+                "ls",
+                serde_json::json!({"directory": dir.path().to_string_lossy()}),
+            ),
+            plan_mode_claims(),
+        )
+        .await;
+        assert!(result.is_success());
+        assert!(result.to_string().contains("file.txt"));
+    }
+
+    #[tokio::test]
+    async fn sudo_bypasses_plan_mode_restriction() {
+        let mut claims = plan_mode_claims();
+        claims.sudo();
+
+        let result = exec_non_interactive(
+            make_tool("bash"),
+            make_call(
+                "bash",
+                serde_json::json!({"command": "echo plan-mode-test"}),
+            ),
+            claims,
+        )
+        .await;
+        assert!(result.is_success());
     }
 }

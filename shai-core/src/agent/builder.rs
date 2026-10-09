@@ -12,11 +12,11 @@ use crate::config::agent::{AgentConfig, CompactionConfig, VerificationConfig};
 use crate::config::config::ShaiConfig;
 use crate::runners::coder::CoderBrain;
 use crate::tools::mcp::mcp_oauth::signin_oauth;
+use crate::tools::skills::SkillTool;
 use crate::tools::{
     create_mcp_client, create_tool, get_mcp_tools, AnyTool, FsOperationLog, McpConfig,
     McpServerStatus, TodoStorage, TOOL_NAMES,
 };
-use crate::tools::skills::SkillTool;
 
 use tracing::{debug, warn};
 
@@ -130,7 +130,14 @@ impl AgentBuilder {
 
         let tools: Vec<Box<dyn AnyTool>> = TOOL_NAMES
             .iter()
-            .filter_map(|name| create_tool(name, fs_log.clone(), todo_storage.clone(), &exclude_patterns))
+            .filter_map(|name| {
+                create_tool(
+                    name,
+                    fs_log.clone(),
+                    todo_storage.clone(),
+                    &exclude_patterns,
+                )
+            })
             .collect();
 
         (tools, todo_storage)
@@ -236,10 +243,7 @@ impl AgentBuilder {
 
         for tool in &tools {
             let group_name = tool.group().unwrap_or("unknown").to_string();
-            tool_groups
-                .entry(group_name)
-                .or_insert_with(Vec::new)
-                .push(tool.name());
+            tool_groups.entry(group_name).or_default().push(tool.name());
         }
 
         // Display builtin tools first
@@ -266,10 +270,17 @@ impl AgentBuilder {
     }
 
     /// Create tools from config
-async fn create_tools_from_config(
+    async fn create_tools_from_config(
         config: &mut AgentConfig,
         fs_log: Arc<FsOperationLog>,
-    ) -> Result<(Vec<Box<dyn AnyTool>>, Arc<TodoStorage>, Vec<McpServerStatus>), AgentError> {
+    ) -> Result<
+        (
+            Vec<Box<dyn AnyTool>>,
+            Arc<TodoStorage>,
+            Vec<McpServerStatus>,
+        ),
+        AgentError,
+    > {
         let mut tools: Vec<Box<dyn AnyTool>> = Vec::new();
         let mut mcp_status: Vec<McpServerStatus> = Vec::new();
 
@@ -278,7 +289,7 @@ async fn create_tools_from_config(
 
         // Add builtin tools based on config
         let builtin_tools_to_add = if config.tools.builtin.contains(&"*".to_string()) {
-            TOOL_NAMES.iter().map(|s| *s).collect::<Vec<_>>()
+            TOOL_NAMES.to_vec()
         } else {
             // Add only specified tools
             config.tools.builtin.iter().map(|s| s.as_str()).collect()

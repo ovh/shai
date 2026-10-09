@@ -51,9 +51,14 @@ impl PermissionWidget<'_> {
     ) -> Self {
         let formatter = PrettyFormatter::new();
         let formatted_request = formatter.format_toolcall(&request.call, request.preview.as_ref());
-        let preview_text = formatted_request
+        let mut preview_text = formatted_request
             .into_text()
             .unwrap_or_else(|_| Text::from(formatted_request.clone()));
+        super::history::patch_default_style(
+            &mut preview_text,
+            palette.input_text,
+            palette.background,
+        );
         let content_length = preview_text.lines.len();
 
         Self {

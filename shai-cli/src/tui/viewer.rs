@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Scrollbar, ScrollbarOrientation, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 use ratatui::Frame as RataFrame;
 use ratatui::Terminal;
 use shai_core::tools::highlight::highlight_content;
@@ -52,23 +52,25 @@ impl AlternateScreenViewer {
             None => " Tool Output ".to_string(),
         };
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(Line::from(title.trim()).add_modifier(Modifier::BOLD))
-            .padding(Padding::new(1, 1, 1, 1));
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
         let text = display_content.into_text().unwrap_or_else(|_| {
             Text::styled(
                 display_content.to_string(),
                 Style::default().fg(Color::White),
             )
         });
-
         let total_lines = text.lines.len();
+
+        // Lay out the frame first so we know the visible height, then build the
+        // footer (which carries the scroll %) into the bottom border line.
+        //
+        // Only TOP/BOTTOM borders are drawn: the left/right border characters
+        // would otherwise be copied along with the content when the user selects
+        // multiple lines (the whole point of this raw viewer). Horizontal padding
+        // is likewise zero so copied lines are flush.
+        let block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .padding(Padding::new(0, 0, 1, 1));
+        let inner = block.inner(area);
         let visible_height = inner.height as usize;
 
         let clamped_offset = if total_lines > visible_height {
@@ -78,24 +80,29 @@ impl AlternateScreenViewer {
             0
         };
 
+        // Scroll position as a percentage, shown in the bottom border so selecting
+        // content never picks up extra UI glyphs.
+        let max_offset = total_lines.saturating_sub(visible_height);
+        let scroll_hint = clamped_offset
+            .checked_mul(100)
+            .and_then(|v| v.checked_div(max_offset))
+            .map(|percent| format!(" | {}%", percent))
+            .unwrap_or_default();
+        let footer = format!(
+            " \u{2191}\u{2193} Scroll | PageUp/PageDown | q/Esc Close{}",
+            scroll_hint
+        );
+
+        let block = block
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(Line::from(title.trim()).add_modifier(Modifier::BOLD))
+            .title_bottom(Line::from(footer).fg(Color::DarkGray));
+        frame.render_widget(block, area);
+
         let paragraph = Paragraph::new(text)
             .wrap(Wrap { trim: false })
             .scroll((clamped_offset as u16, 0));
         frame.render_widget(paragraph, inner);
-
-        if total_lines > visible_height {
-            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None);
-            let mut scrollbar_state =
-                ratatui::widgets::ScrollbarState::new(total_lines).position(clamped_offset);
-            frame.render_stateful_widget(scrollbar, inner, &mut scrollbar_state);
-        }
-
-        let footer_area = Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1);
-        let footer = Paragraph::new(" \u{2191}\u{2193} Scroll | PageUp/PageDown | q/Esc Close")
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(footer, footer_area);
     }
 }
 

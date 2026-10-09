@@ -137,7 +137,10 @@ fn parse_binding(s: &str) -> Result<KeyBinding, String> {
             "" => {}
             _ => {
                 if key_part.is_some() {
-                    return Err(format!("unexpected token '{}' in key binding '{}'", part, s));
+                    return Err(format!(
+                        "unexpected token '{}' in key binding '{}'",
+                        part, s
+                    ));
                 }
                 key_part = Some(*part);
             }
@@ -226,22 +229,34 @@ impl Default for ShortcutsConfig {
     }
 }
 
+/// Theme selection for TUI and markdown rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    #[default]
+    Dark,
+    Light,
+}
+
 /// Top-level TUI configuration loaded from `tui.config.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TuiConfig {
     #[serde(default)]
     pub shortcuts: ShortcutsConfig,
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            shortcuts: ShortcutsConfig::default(),
-        }
-    }
+    /// Initial TUI theme (toggled at runtime with `/theme`)
+    #[serde(default)]
+    pub theme: ThemePreference,
+    /// Markdown rendering skin for agent responses. When omitted it follows `theme`.
+    #[serde(default)]
+    pub markdown_skin: Option<ThemePreference>,
 }
 
 impl TuiConfig {
+    /// Markdown skin, falling back to the TUI theme when not set explicitly.
+    pub fn markdown_skin(&self) -> ThemePreference {
+        self.markdown_skin.unwrap_or(self.theme)
+    }
+
     pub fn config_path() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let config_dir = std::env::var("XDG_CONFIG_HOME")
             .map(std::path::PathBuf::from)
@@ -259,51 +274,86 @@ impl TuiConfig {
 
     pub fn load() -> Self {
         let Ok(path) = Self::config_path() else {
-            return Self::from_env_or_default();
+            return Self::from_env_or_default().0;
         };
 
         if !path.exists() {
-            return Self::from_env_or_default();
+            let (config, from_env) = Self::from_env_or_default();
+            if from_env {
+                // One-time migration: persist the env-derived config so the
+                // deprecated variables are only read once and the file
+                // becomes the single source of truth
+                if let Ok(json) = serde_json::to_string_pretty(&config) {
+                    let _ = std::fs::write(&path, json);
+                }
+            }
+            return config;
         }
 
         let content = match std::fs::read(&path) {
             Ok(content) => content,
-            Err(_) => return Self::from_env_or_default(),
+            Err(_) => return Self::from_env_or_default().0,
         };
 
         let stripped = json_comments::StripComments::new(&content[..]);
         serde_json::from_reader(stripped).unwrap_or_default()
     }
 
-    /// Build config from `SHAI_KEY_*` environment variables, falling back to defaults.
-    fn from_env_or_default() -> Self {
+    /// Build config from `SHAI_KEY_*` / `SHAI_TUI_THEME` environment variables,
+    /// falling back to defaults. Only used when `tui.config.json` does not exist.
+    /// Returns the config and whether at least one legacy variable was found.
+    fn from_env_or_default() -> (Self, bool) {
+        let mut from_env = false;
+        let theme = match std::env::var("SHAI_TUI_THEME") {
+            Ok(val) => {
+                from_env = true;
+                match val.to_lowercase().as_str() {
+                    "light" => ThemePreference::Light,
+                    "dark" => ThemePreference::Dark,
+                    _ => ThemePreference::default(),
+                }
+            }
+            Err(_) => ThemePreference::default(),
+        };
         let mut shortcuts = ShortcutsConfig::default();
         if let Ok(val) = std::env::var("SHAI_KEY_TOGGLE_THEME") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.toggle_theme = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_EXIT") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.exit = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_CANCEL_TASK") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.cancel_task = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_CLEAR_INPUT") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.clear_input = kb;
+                from_env = true;
             }
         }
         if let Ok(val) = std::env::var("SHAI_KEY_PASTE") {
             if let Ok(kb) = parse_binding(&val) {
                 shortcuts.paste = kb;
+                from_env = true;
             }
         }
-        Self { shortcuts }
+        (
+            Self {
+                shortcuts,
+                theme,
+                markdown_skin: None,
+            },
+            from_env,
+        )
     }
 }
 
@@ -393,10 +443,22 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = ShortcutsConfig::default();
-        assert_eq!(config.toggle_theme, KeyBinding::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
-        assert_eq!(config.exit, KeyBinding::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert_eq!(config.cancel_task, KeyBinding::new(KeyCode::Escape, KeyModifiers::NONE));
-        assert_eq!(config.cycle_agent_mode, KeyBinding::new(KeyCode::Tab, KeyModifiers::SHIFT));
+        assert_eq!(
+            config.toggle_theme,
+            KeyBinding::new(KeyCode::Char('t'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(
+            config.exit,
+            KeyBinding::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(
+            config.cancel_task,
+            KeyBinding::new(KeyCode::Escape, KeyModifiers::NONE)
+        );
+        assert_eq!(
+            config.cycle_agent_mode,
+            KeyBinding::new(KeyCode::Tab, KeyModifiers::SHIFT)
+        );
     }
 
     #[test]
@@ -406,6 +468,99 @@ mod tests {
         let parsed: TuiConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(config.shortcuts.toggle_theme, parsed.shortcuts.toggle_theme);
         assert_eq!(config.shortcuts.exit, parsed.shortcuts.exit);
-        assert_eq!(config.shortcuts.cycle_agent_mode, parsed.shortcuts.cycle_agent_mode);
+        assert_eq!(
+            config.shortcuts.cycle_agent_mode,
+            parsed.shortcuts.cycle_agent_mode
+        );
+        assert_eq!(config.theme, parsed.theme);
+        assert_eq!(config.markdown_skin, parsed.markdown_skin);
+    }
+
+    #[test]
+    fn test_theme_defaults_to_dark() {
+        let config = TuiConfig::default();
+        assert_eq!(config.theme, ThemePreference::Dark);
+        assert_eq!(config.markdown_skin, None);
+        assert_eq!(config.markdown_skin(), ThemePreference::Dark);
+    }
+
+    #[test]
+    fn test_theme_fields_parse_from_json() {
+        let parsed: TuiConfig =
+            serde_json::from_str(r#"{ "theme": "light", "markdown_skin": "light" }"#).unwrap();
+        assert_eq!(parsed.theme, ThemePreference::Light);
+        assert_eq!(parsed.markdown_skin, Some(ThemePreference::Light));
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Light);
+
+        let parsed: TuiConfig = serde_json::from_str(r#"{ "theme": "dark" }"#).unwrap();
+        assert_eq!(parsed.theme, ThemePreference::Dark);
+        assert_eq!(parsed.markdown_skin, None);
+    }
+
+    #[test]
+    fn test_markdown_skin_follows_theme_when_unset() {
+        let parsed: TuiConfig = serde_json::from_str(r#"{ "theme": "light" }"#).unwrap();
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Light);
+
+        let parsed: TuiConfig =
+            serde_json::from_str(r#"{ "theme": "light", "markdown_skin": "dark" }"#).unwrap();
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Dark);
+    }
+
+    #[test]
+    fn test_theme_fields_omitted_fall_back_to_default() {
+        let parsed: TuiConfig = serde_json::from_str(r#"{ "shortcuts": {} }"#).unwrap();
+        assert_eq!(parsed.theme, ThemePreference::Dark);
+        assert_eq!(parsed.markdown_skin, None);
+        assert_eq!(parsed.markdown_skin(), ThemePreference::Dark);
+    }
+
+    const LEGACY_ENV_VARS: &[&str] = &[
+        "SHAI_KEY_TOGGLE_THEME",
+        "SHAI_KEY_EXIT",
+        "SHAI_KEY_CANCEL_TASK",
+        "SHAI_KEY_CLEAR_INPUT",
+        "SHAI_KEY_PASTE",
+        "SHAI_TUI_THEME",
+    ];
+
+    #[test]
+    fn test_env_derived_config_is_persisted() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", temp.path());
+        for var in LEGACY_ENV_VARS {
+            std::env::remove_var(var);
+        }
+
+        // No legacy env vars: nothing is written
+        let _ = TuiConfig::load();
+        let config_file = temp.path().join("shai").join("tui.config.json");
+        assert!(!config_file.exists());
+
+        // Legacy env vars present: config is derived and persisted once
+        std::env::set_var("SHAI_KEY_EXIT", "ctrl+e");
+        std::env::set_var("SHAI_TUI_THEME", "light");
+        let config = TuiConfig::load();
+        assert_eq!(
+            config.shortcuts.exit,
+            KeyBinding::new(KeyCode::Char('e'), KeyModifiers::CONTROL)
+        );
+        assert_eq!(config.theme, ThemePreference::Light);
+
+        assert!(config_file.exists());
+        let on_disk: TuiConfig =
+            serde_json::from_str(&std::fs::read_to_string(&config_file).unwrap()).unwrap();
+        assert_eq!(on_disk.shortcuts.exit, config.shortcuts.exit);
+        assert_eq!(on_disk.theme, ThemePreference::Light);
+
+        // Cleanup
+        for var in LEGACY_ENV_VARS {
+            std::env::remove_var(var);
+        }
+        match prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 }

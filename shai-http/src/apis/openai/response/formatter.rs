@@ -215,7 +215,7 @@ impl EventFormatter for ResponseFormatter {
 
             AgentEvent::StatusChanged { new_status, .. } => {
                 use shai_core::agent::PublicAgentState;
-                if matches!(new_status, PublicAgentState::Paused { .. }) {
+                if matches!(new_status, PublicAgentState::Paused) {
                     let msg_output = ResponseOutput::Message(OutputMessage {
                         id: Uuid::new_v4().to_string(),
                         role: Role::Assistant,

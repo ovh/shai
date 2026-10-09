@@ -1,5 +1,6 @@
 use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
 use shai_core::agent::events::AgentEvent;
+use shai_core::tools::todo::TodoItem;
 
 use super::mcp_manager::McpManager;
 use super::perm_manager::PermissionManager;
@@ -13,6 +14,7 @@ pub struct AgentState {
     permission_manager: PermissionManager,
     session_manager: SessionManager,
     mcp_manager: McpManager,
+    todos: Vec<TodoItem>,
 }
 
 impl AgentState {
@@ -23,6 +25,7 @@ impl AgentState {
             permission_manager: PermissionManager::new(),
             session_manager: SessionManager::new(),
             mcp_manager: McpManager::new(),
+            todos: Vec::new(),
         }
     }
 
@@ -62,6 +65,10 @@ impl AgentState {
     pub fn mcp_manager_mut(&mut self) -> &mut McpManager {
         &mut self.mcp_manager
     }
+
+    pub fn todos(&self) -> &[TodoItem] {
+        &self.todos
+    }
 }
 
 #[async_trait::async_trait]
@@ -75,7 +82,9 @@ impl super::handler::AgentHandler for AgentState {
                 self.tool_tracker.complete_tool(call, result);
             }
             AgentEvent::PermissionRequired {
-                request_id, request, ..
+                request_id,
+                request,
+                ..
             } => {
                 self.permission_manager
                     .push(request_id.clone(), request.clone());
@@ -88,15 +97,18 @@ impl super::handler::AgentHandler for AgentState {
                 self.token_counter
                     .add(*input_tokens, *output_tokens, *cached_tokens);
             }
+            AgentEvent::TodoUpdated { todos } => {
+                self.todos = todos.clone();
+            }
             AgentEvent::BrainResult {
-                thought: Ok(ChatMessage::Assistant { content, .. }),
+                thought:
+                    Ok(ChatMessage::Assistant {
+                        content: Some(ChatMessageContent::Text(text)),
+                        ..
+                    }),
                 ..
-            } => {
-                if let Some(ChatMessageContent::Text(text)) = content {
-                    if !text.trim().is_empty() {
-                        self.session_manager.set_last_assistant_response(text);
-                    }
-                }
+            } if !text.trim().is_empty() => {
+                self.session_manager.set_last_assistant_response(text);
             }
             _ => {}
         }
@@ -105,8 +117,8 @@ impl super::handler::AgentHandler for AgentState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::handler::AgentHandler;
+    use super::*;
     use shai_core::agent::events::PermissionRequest;
 
     use super::super::test_utils::make_tool_call;
@@ -174,5 +186,37 @@ mod tests {
             state.session_manager.last_assistant_response(),
             "Hello world"
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_todo_updated_stores_todos() {
+        use shai_core::tools::todo::{TodoItem, TodoStatus};
+
+        let mut state = AgentState::new();
+        assert!(state.todos().is_empty());
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let event = AgentEvent::TodoUpdated {
+            todos: vec![
+                TodoItem {
+                    id: "1".to_string(),
+                    content: "explore repo".to_string(),
+                    status: TodoStatus::Completed,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                },
+                TodoItem {
+                    id: "2".to_string(),
+                    content: "implement feature".to_string(),
+                    status: TodoStatus::InProgress,
+                    created_at: now.clone(),
+                    updated_at: now,
+                },
+            ],
+        };
+        state.handle_event(&event).await;
+
+        assert_eq!(state.todos().len(), 2);
+        assert_eq!(state.todos()[1].content, "implement feature");
     }
 }

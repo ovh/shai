@@ -1,4 +1,6 @@
 #![allow(clippy::module_inception)]
+// async_trait-generated futures trip double_must_use on methods returning Result
+#![allow(clippy::double_must_use)]
 use clap::{Parser, Subcommand};
 use crossterm::{
     cursor,
@@ -25,7 +27,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{interval, sleep};
 use tui::auth::AppAuth;
-use tui::theme::{apply_gradient, logo, logo_cyan, SHAI_YELLOW};
+use tui::theme::logo_cyan;
 use tui::App;
 
 #[cfg(unix)]
@@ -47,6 +49,9 @@ use shell::pty::ShaiPtyManager;
 use shell::rc::{get_shell, ShellType};
 
 use crate::headless::tools::list_all_tools;
+
+/// Sentinel value for `--restore` used without a session ID (opens the picker).
+const RESTORE_PICKER_SENTINEL: &str = "@picker";
 
 #[derive(Parser)]
 #[command(name = "shai")]
@@ -76,8 +81,9 @@ struct Cli {
     /// Show version information
     #[arg(short, long)]
     version: bool,
-    /// Restore a previous session by session ID
-    #[arg(short, long)]
+    /// Restore a previous session by session ID.
+    /// Without an ID, opens the session picker (TUI only).
+    #[arg(short, long, num_args = 0..=1, default_missing_value = "@picker")]
     restore: Option<String>,
     /// Restore the most recent session automatically
     #[arg(long)]
@@ -202,61 +208,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Auth) => {
             handle_config().await?;
         }
-        Some(Commands::Agent { name }) => {
-            match name.as_deref() {
-                Some("list") => {
-                    list_agents();
-                }
-                Some(name) => {
-                    handle_main(Some(name.to_string()), None, None).await?;
-                }
-                None => {
-                    handle_main(None, None, Some(tui::app::InitialModal::AgentPicker))
-                        .await?;
-                }
+        Some(Commands::Agent { name }) => match name.as_deref() {
+            Some("list") => {
+                list_agents();
             }
-        }
-        Some(Commands::Session { id }) => {
-            match id.as_deref() {
-                Some("latest") => {
-                    let restore_id = match shai_core::session::SessionPersist::list_sessions() {
-                        Ok(sessions) if !sessions.is_empty() => {
-                            Some(sessions[0].session_id.clone())
-                        }
-                        _ => {
-                            eprintln!("No previous session found.");
-                            return Ok(());
-                        }
-                    };
-                    handle_main(None, restore_id, None).await?;
-                }
-                Some(id) => {
-                    handle_main(None, Some(id.to_string()), None).await?;
-                }
-                None => {
-                    handle_main(
-                        None,
-                        None,
-                        Some(tui::app::InitialModal::SessionPicker),
-                    )
-                    .await?;
-                }
+            Some(name) => {
+                handle_main(Some(name.to_string()), None, None).await?;
             }
-        }
-        Some(Commands::List { what }) => {
-            match what {
-                Some(ListTarget::Agent) => list_agents(),
-                Some(ListTarget::Session) => list_sessions(),
-                Some(ListTarget::Skills) => list_skills(),
-                None => {
-                    list_agents();
-                    println!();
-                    list_sessions();
-                    println!();
-                    list_skills();
-                }
+            None => {
+                handle_main(None, None, Some(tui::app::InitialModal::AgentPicker)).await?;
             }
-        }
+        },
+        Some(Commands::Session { id }) => match id.as_deref() {
+            Some("latest") => {
+                let restore_id = match shai_core::session::SessionPersist::list_sessions() {
+                    Ok(sessions) if !sessions.is_empty() => Some(sessions[0].session_id.clone()),
+                    _ => {
+                        eprintln!("No previous session found.");
+                        return Ok(());
+                    }
+                };
+                handle_main(None, restore_id, None).await?;
+            }
+            Some(id) => {
+                handle_main(None, Some(id.to_string()), None).await?;
+            }
+            None => {
+                handle_main(None, None, Some(tui::app::InitialModal::SessionPicker)).await?;
+            }
+        },
+        Some(Commands::List { what }) => match what {
+            Some(ListTarget::Agent) => list_agents(),
+            Some(ListTarget::Session) => list_sessions(),
+            Some(ListTarget::Skills) => list_skills(),
+            None => {
+                list_agents();
+                println!();
+                list_sessions();
+                println!();
+                list_skills();
+            }
+        },
         #[cfg(unix)]
         Some(Commands::Precmd { command }) => {
             let command_str = command.join(" ");
@@ -303,6 +295,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Handle --prompt flag (headless mode)
             if let Some(prompt) = cli.prompt {
+                if cli.restore.as_deref() == Some(RESTORE_PICKER_SENTINEL) {
+                    eprintln!(
+                        "--restore without a session ID requires the TUI. \
+                         Use --restore <id>, --latest, or `shai session`."
+                    );
+                    return Ok(());
+                }
                 let mut messages = vec![prompt];
                 if let Some(ref stdin_content) = stdin_input {
                     messages.push(stdin_content.clone());
@@ -321,6 +320,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Handle piped stdin without --prompt
             if let Some(stdin_content) = stdin_input {
+                if cli.restore.as_deref() == Some(RESTORE_PICKER_SENTINEL) {
+                    eprintln!(
+                        "--restore without a session ID requires the TUI. \
+                         Use --restore <id>, --latest, or `shai session`."
+                    );
+                    return Ok(());
+                }
                 if cli.interactive {
                     // Interactive mode: show TUI with piped content as initial prompt
                     handle_main_with_prompt(cli.agent.clone(), stdin_content).await?;
@@ -341,11 +347,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // No input, show TUI
+            if cli.restore.as_deref() == Some(RESTORE_PICKER_SENTINEL) {
+                // Bare `--restore`: open the session picker
+                handle_main(
+                    cli.agent.clone(),
+                    None,
+                    Some(tui::app::InitialModal::SessionPicker),
+                )
+                .await?;
+                return Ok(());
+            }
             let restore_id = if cli.latest {
                 match shai_core::session::SessionPersist::list_sessions() {
-                    Ok(sessions) if !sessions.is_empty() => {
-                        Some(sessions[0].session_id.clone())
-                    }
+                    Ok(sessions) if !sessions.is_empty() => Some(sessions[0].session_id.clone()),
                     _ => {
                         eprintln!("No previous session found.");
                         return Ok(());
@@ -401,8 +415,6 @@ async fn handle_main(
     restore_session_id: Option<String>,
     initial_modal: Option<tui::app::InitialModal>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let logo = logo();
-    println!("{}", apply_gradient(&logo, SHAI_YELLOW, SHAI_YELLOW));
     let mut app = App::new();
     if let Some(modal) = initial_modal {
         app.initial_modal = modal;
@@ -417,8 +429,6 @@ async fn handle_main_with_prompt(
     agent_name: Option<String>,
     prompt: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let logo = logo();
-    println!("{}", apply_gradient(&logo, SHAI_YELLOW, SHAI_YELLOW));
     let mut app = App::new();
     app.initial_prompt = Some(prompt);
     if let Err(e) = app.run(agent_name, None).await {
@@ -430,6 +440,12 @@ async fn handle_main_with_prompt(
 async fn handle_config() -> Result<(), Box<dyn std::error::Error>> {
     let mut auth = AppAuth::new();
     auth.run().await;
+
+    // Standalone entry point: the auth view enabled raw mode and hid the
+    // cursor, restore both before handing the terminal back to the shell.
+    // (When the auth view runs embedded via /auth, the main TUI owns those.)
+    let _ = io::stdout().execute(cursor::Show);
+    let _ = disable_raw_mode();
     Ok(())
 }
 
@@ -590,7 +606,7 @@ pub async fn handle_postcmd(
                     if let Some(rational) = &res.short_rational {
                         eprintln!("\n\x1b[2m{}\x1b[0m\n", rational);
                     }
-                    eprintln!("\x1b[38;5;206m❯\x1b[0m \x1b[1m{}\x1b[0m", &res.fixed_cli);
+                    eprintln!("\x1b[38;5;206m❯\x1b[0m \x1b[1m{}\x1b[0m", res.fixed_cli);
                     eprintln!("\n\x1b[2m ↵ Run • Esc / Ctrl+C Cancel\x1b[0m");
 
                     io::stdout().execute(cursor::MoveUp(3)).unwrap();
@@ -765,11 +781,17 @@ fn list_skills() {
     println!("Available skills:");
     for skill in &skills {
         if skill.description.is_empty() {
-            println!("  \x1b[36m\u{2022}\x1b[0m {}", skill.name);
+            println!(
+                "  \x1b[36m\u{2022}\x1b[0m {} \x1b[90m({})\x1b[0m",
+                skill.name,
+                skill.source()
+            );
         } else {
             println!(
-                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {}",
-                skill.name, skill.description
+                "  \x1b[36m\u{2022}\x1b[0m \x1b[1m{}\x1b[0m \u{2014} {} \x1b[90m({})\x1b[0m",
+                skill.name,
+                skill.description,
+                skill.source()
             );
         }
     }

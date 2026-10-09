@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use shai_core::config::tui::{KeyBinding, KeyCode as ConfigCode, KeyModifiers as ConfigKeyMods, TuiConfig};
+use shai_core::config::tui::{
+    KeyBinding, KeyCode as ConfigCode, KeyModifiers as ConfigKeyMods, TuiConfig,
+};
 
 /// Wrapper around `TuiConfig` that provides convenient key-matching against `crossterm::event::KeyEvent`.
 pub struct Shortcuts {
@@ -24,8 +26,18 @@ impl Shortcuts {
     }
 
     impl_shortcut_accessors!(
-        toggle_theme, exit, cancel_task, clear_input, paste, clear_screen, regenerate,
-        copy_response, expand_tool, session_picker, prompt_picker, cycle_agent_mode
+        toggle_theme,
+        exit,
+        cancel_task,
+        clear_input,
+        paste,
+        clear_screen,
+        regenerate,
+        copy_response,
+        expand_tool,
+        session_picker,
+        prompt_picker,
+        cycle_agent_mode
     );
 
     pub fn matches(&self, key_event: &KeyEvent, binding: &KeyBinding) -> bool {
@@ -77,17 +89,20 @@ mod tests {
     #[test]
     fn test_load_defaults() {
         let shortcuts = Shortcuts::load();
-        assert_eq!(shortcuts.toggle_theme(), &KeyBinding::new(ConfigCode::Char('t'), ConfigKeyMods::CONTROL));
-        assert_eq!(shortcuts.exit(), &KeyBinding::new(ConfigCode::Char('c'), ConfigKeyMods::CONTROL));
+        assert_eq!(
+            shortcuts.toggle_theme(),
+            &KeyBinding::new(ConfigCode::Char('t'), ConfigKeyMods::CONTROL)
+        );
+        assert_eq!(
+            shortcuts.exit(),
+            &KeyBinding::new(ConfigCode::Char('c'), ConfigKeyMods::CONTROL)
+        );
     }
 
     #[test]
     fn test_match_ctrl_t() {
         let shortcuts = Shortcuts::load();
-        let event = KeyEvent::new(
-            KeyCode::Char('t'),
-            KeyModifiers::CONTROL,
-        );
+        let event = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
         assert!(shortcuts.matches(&event, shortcuts.toggle_theme()));
     }
 

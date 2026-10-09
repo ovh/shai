@@ -4,16 +4,16 @@ use ratatui::{
     style::{Color, Style},
     symbols::border,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
+use ratatui_textarea::TextArea;
 use shai_core::config::config::ShaiConfig;
 use shai_llm::client::LlmClient;
 use shai_llm::provider::ProviderInfo;
 use std::collections::HashMap;
 use std::io;
 use tokio::task::JoinHandle;
-use ratatui_textarea::TextArea;
 
 use super::auth::NavAction;
 
@@ -203,8 +203,13 @@ impl ModalEnvs {
             constraints.push(Constraint::Length(3));
             constraints.push(Constraint::Length(1));
         }
-        if self.error_message.is_some() {
-            constraints.push(Constraint::Length(2)); // Error area
+        let error_height = self
+            .error_message
+            .as_deref()
+            .map(|error| super::error_height(error, inner.width))
+            .unwrap_or(0);
+        if error_height > 0 {
+            constraints.push(Constraint::Length(error_height)); // Error area
         }
         constraints.push(Constraint::Length(1)); // Help area
 
@@ -258,7 +263,9 @@ impl ModalEnvs {
         if let Some(error) = &self.error_message {
             if let Some(error_area) = layout_areas.get(2 * num_fields) {
                 frame.render_widget(
-                    Paragraph::new(error.clone()).style(Style::default().fg(Color::Red)),
+                    Paragraph::new(error.clone())
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(Wrap { trim: false }),
                     *error_area,
                 );
             }

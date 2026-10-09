@@ -189,6 +189,7 @@ pub struct AgentSocket {
 }
 
 impl AgentCore {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session_id: String,
         brain: Box<dyn Brain>,
@@ -423,7 +424,7 @@ impl AgentCore {
                     let trace = self.tool_ctx.trace.clone();
                     let guard = trace.read().await;
                     return Ok(AgentResult {
-                        success: success.clone(),
+                        success: *success,
                         message: "Agent completed".to_string(),
                         trace: guard.clone(),
                     });
@@ -639,7 +640,7 @@ impl AgentCore {
                     .internal_tx
                     .send(InternalAgentEvent::UserResponseReceived {
                         request_id: query_id,
-                        response: response,
+                        response,
                     })
                     .map_err(|_| AgentError::SessionClosed)?;
                 Ok(AgentResponse::Ack)
@@ -653,8 +654,8 @@ impl AgentCore {
                     .tool_ctx
                     .internal_tx
                     .send(InternalAgentEvent::PermissionResponseReceived {
-                        request_id: request_id,
-                        response: response,
+                        request_id,
+                        response,
                     })
                     .map_err(|_| AgentError::SessionClosed)?;
                 Ok(AgentResponse::Ack)

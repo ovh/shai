@@ -47,15 +47,19 @@ impl SkillTool {
 
         match skill {
             Some(skill_info) => {
-                let content = match fs::read_to_string(&skill_info.path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return ToolResult::error(format!(
-                            "Failed to read skill file '{}': {}",
-                            skill_info.path.display(),
-                            e
-                        ));
-                    }
+                // Built-in skills are embedded in the binary; disk skills are read on demand
+                let content = match skill_info.content {
+                    Some(embedded) => embedded.to_string(),
+                    None => match fs::read_to_string(&skill_info.path) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            return ToolResult::error(format!(
+                                "Failed to read skill file '{}': {}",
+                                skill_info.path.display(),
+                                e
+                            ));
+                        }
+                    },
                 };
 
                 // Strip the frontmatter — return only the body after the closing `---`
@@ -142,5 +146,23 @@ mod tests {
             })
             .await;
         assert!(result.is_error());
+    }
+
+    #[tokio::test]
+    async fn test_skill_tool_loads_builtin_memory_skill() {
+        let tool = SkillTool::new();
+        let result = tool
+            .execute(SkillToolParams {
+                name: "memory".to_string(),
+            })
+            .await;
+        match result {
+            ToolResult::Success { output, .. } => {
+                // Frontmatter must be stripped, body served from the embedded copy
+                assert!(!output.contains("name: memory"));
+                assert!(output.contains("MEMORY.md"));
+            }
+            other => panic!("expected success, got {:?}", other),
+        }
     }
 }

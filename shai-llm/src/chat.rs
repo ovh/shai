@@ -14,7 +14,54 @@ use reqwest_eventsource::{Event, EventSource, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fmt;
 use std::pin::Pin;
+
+use crate::error::{retry_after_from_headers, RateLimitedError};
+
+/// Error type for [`ChatClient`].
+///
+/// Wraps the upstream [`APIError`] while adding a [`RateLimitedError`] variant
+/// that preserves the `Retry-After` hint, which `APIError` discards.
+#[derive(Debug)]
+pub enum ChatError {
+    Api(APIError),
+    RateLimited(RateLimitedError),
+}
+
+impl ChatError {
+    /// Return the `Retry-After` delay if this error carries one.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            ChatError::RateLimited(e) => e.retry_after,
+            ChatError::Api(_) => None,
+        }
+    }
+}
+
+impl From<APIError> for ChatError {
+    fn from(e: APIError) -> Self {
+        ChatError::Api(e)
+    }
+}
+
+impl fmt::Display for ChatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ChatError::Api(e) => write!(f, "{}", e),
+            ChatError::RateLimited(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for ChatError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ChatError::Api(e) => Some(e),
+            ChatError::RateLimited(e) => Some(e),
+        }
+    }
+}
 
 /// Trait for JSON manipulation hooks
 #[async_trait]
@@ -92,31 +139,49 @@ impl ChatClient {
         request
     }
 
-    /// Check status code and handle errors
+    /// Map an HTTP status to the corresponding [`ChatError`].
+    ///
+    /// `retry_after` must be read from the response headers before the body
+    /// is consumed.
+    fn error_from_status(
+        status: reqwest::StatusCode,
+        retry_after: Option<std::time::Duration>,
+        error_text: String,
+    ) -> ChatError {
+        match status.as_u16() {
+            400 => ChatError::Api(APIError::InvalidRequestError(error_text)),
+            401 => ChatError::Api(APIError::AuthenticationError(error_text)),
+            403 => ChatError::Api(APIError::PermissionError(error_text)),
+            404 => ChatError::Api(APIError::NotFoundError(error_text)),
+            429 | 503 => ChatError::RateLimited(RateLimitedError::new(
+                status.as_u16(),
+                retry_after,
+                error_text,
+            )),
+            _ => ChatError::Api(APIError::UnknownError(status.as_u16(), error_text)),
+        }
+    }
+
+    /// Check status code and handle errors.
+    ///
+    /// Rate-limiting responses (429/503) are surfaced as [`ChatError::RateLimited`]
+    /// so the caller can honor the `Retry-After` header. The header must be read
+    /// before the body is consumed.
     async fn check_status_code(
         result: Result<reqwest::Response, reqwest::Error>,
-    ) -> Result<reqwest::Response, APIError> {
+    ) -> Result<reqwest::Response, ChatError> {
         match result {
             Ok(response) => {
                 if response.status().is_success() {
                     Ok(response)
                 } else {
                     let status = response.status();
+                    let retry_after = retry_after_from_headers(response.headers());
                     let error_text = response.text().await.unwrap_or_default();
-
-                    match status.as_u16() {
-                        400 => Err(APIError::InvalidRequestError(error_text)),
-                        401 => Err(APIError::AuthenticationError(error_text)),
-                        403 => Err(APIError::PermissionError(error_text)),
-                        404 => Err(APIError::NotFoundError(error_text)),
-                        429 => Err(APIError::RateLimitError(error_text)),
-                        500 => Err(APIError::UnknownError(500, error_text)),
-                        503 => Err(APIError::UnknownError(503, error_text)),
-                        _ => Err(APIError::UnknownError(status.as_u16(), error_text)),
-                    }
+                    Err(Self::error_from_status(status, retry_after, error_text))
                 }
             }
-            Err(error) => Err(APIError::ParseError(error.to_string())),
+            Err(error) => Err(ChatError::Api(APIError::ParseError(error.to_string()))),
         }
     }
 
@@ -125,7 +190,7 @@ impl ChatClient {
         &self,
         parameters: &ChatCompletionParameters,
         hooks: &H,
-    ) -> Result<ChatCompletionResponse, APIError> {
+    ) -> Result<ChatCompletionResponse, ChatError> {
         // Serialize to JSON and apply before_send hook
         let mut json =
             serde_json::to_value(parameters).map_err(|e| APIError::ParseError(e.to_string()))?;
@@ -165,7 +230,7 @@ impl ChatClient {
         hooks: H,
     ) -> Result<
         Pin<Box<dyn Stream<Item = Result<ChatCompletionChunkResponse, APIError>> + Send>>,
-        APIError,
+        ChatError,
     > {
         // Serialize to JSON and apply before_send hook
         let mut json =
@@ -173,11 +238,44 @@ impl ChatClient {
         json = hooks.before_send(json).await?;
 
         // Create event source for streaming
-        let event_source = self
+        let mut event_source = self
             .build_request(Method::POST, "/chat/completions", "application/json")
             .json(&json)
             .eventsource()
             .map_err(|e| APIError::ParseError(e.to_string()))?;
+
+        // Wait for the connection to be established before returning the
+        // stream. A healthy connection emits `Event::Open` first; HTTP errors
+        // (non-200 status, wrong content type) would otherwise only surface
+        // as stream items, after the caller's retry loop has already accepted
+        // the stream. Surfacing them here lets `LlmClient::chat_stream` retry
+        // and honor `Retry-After` exactly like the non-streaming path.
+        match event_source.next().await {
+            Some(Ok(Event::Open)) => {}
+            Some(Err(reqwest_eventsource::Error::InvalidStatusCode(status, response))) => {
+                let retry_after = retry_after_from_headers(response.headers());
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(Self::error_from_status(status, retry_after, error_text));
+            }
+            Some(Err(reqwest_eventsource::Error::InvalidContentType(content_type, response))) => {
+                let error_text = response.text().await.unwrap_or_default();
+                return Err(ChatError::Api(APIError::StreamError(format!(
+                    "unexpected content-type {:?}: {}",
+                    content_type, error_text
+                ))));
+            }
+            Some(Err(e)) => return Err(ChatError::Api(APIError::StreamError(e.to_string()))),
+            Some(Ok(_)) => {
+                return Err(ChatError::Api(APIError::StreamError(
+                    "unexpected event before stream open".to_string(),
+                )));
+            }
+            None => {
+                return Err(ChatError::Api(APIError::StreamError(
+                    "event stream closed before opening".to_string(),
+                )));
+            }
+        }
 
         // Return stream that processes events
         let stream = async_stream::stream! {
@@ -218,3 +316,183 @@ impl ChatClient {
 }
 
 // Note: types are already imported above, no need to re-export
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openai_dive::v1::resources::chat::{
+        ChatCompletionParametersBuilder, ChatMessage, ChatMessageContent,
+    };
+
+    fn sample_params() -> ChatCompletionParameters {
+        ChatCompletionParametersBuilder::default()
+            .model("test-model".to_string())
+            .messages(vec![ChatMessage::User {
+                content: ChatMessageContent::Text("hello".into()),
+                name: None,
+            }])
+            .build()
+            .expect("valid chat parameters")
+    }
+
+    #[tokio::test]
+    async fn rate_limit_surfaces_retry_after() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(429)
+            .with_header("retry-after", "2")
+            .with_body(r#"{"error":"rate limited"}"#)
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("test-key".into(), server.url());
+        let err = client
+            .chat_completion(&sample_params(), &NoHooks)
+            .await
+            .expect_err("expected a rate-limit error");
+
+        match err {
+            ChatError::RateLimited(rate_limited) => {
+                assert_eq!(rate_limited.status, 429);
+                assert_eq!(
+                    rate_limited.retry_after,
+                    Some(std::time::Duration::from_secs(2))
+                );
+            }
+            other => panic!("expected ChatError::RateLimited, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn service_unavailable_surfaces_retry_after() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(503)
+            .with_header("retry-after", "5")
+            .with_body("unavailable")
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("test-key".into(), server.url());
+        let err = client
+            .chat_completion(&sample_params(), &NoHooks)
+            .await
+            .expect_err("expected a 503 error");
+
+        assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(5)));
+    }
+
+    #[tokio::test]
+    async fn auth_error_stays_api_variant() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(401)
+            .with_body("unauthorized")
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("bad-key".into(), server.url());
+        let err = client
+            .chat_completion(&sample_params(), &NoHooks)
+            .await
+            .expect_err("expected an auth error");
+
+        assert!(matches!(
+            err,
+            ChatError::Api(APIError::AuthenticationError(_))
+        ));
+        assert_eq!(err.retry_after(), None);
+    }
+
+    #[tokio::test]
+    async fn stream_rate_limit_surfaces_retry_after() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(429)
+            .with_header("retry-after", "2")
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"rate limited"}"#)
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("test-key".into(), server.url());
+        let err = match client
+            .chat_completion_stream(&sample_params(), NoHooks)
+            .await
+        {
+            Err(err) => err,
+            Ok(_) => panic!("expected a rate-limit error before the stream is returned"),
+        };
+
+        match err {
+            ChatError::RateLimited(rate_limited) => {
+                assert_eq!(rate_limited.status, 429);
+                assert_eq!(
+                    rate_limited.retry_after,
+                    Some(std::time::Duration::from_secs(2))
+                );
+            }
+            other => panic!("expected ChatError::RateLimited, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_auth_error_surfaces_before_stream() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(401)
+            .with_header("content-type", "application/json")
+            .with_body("unauthorized")
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("bad-key".into(), server.url());
+        let err = match client
+            .chat_completion_stream(&sample_params(), NoHooks)
+            .await
+        {
+            Err(err) => err,
+            Ok(_) => panic!("expected an auth error before the stream is returned"),
+        };
+
+        assert!(matches!(
+            err,
+            ChatError::Api(APIError::AuthenticationError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_success_yields_chunks() {
+        let chunk_json = r#"{"id":"chatcmpl-test","object":"chat.completion.chunk","created":1700000000,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#;
+        let body = format!("data: {}\n\ndata: [DONE]\n\n", chunk_json);
+
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let client = ChatClient::new("test-key".into(), server.url());
+        let mut stream = client
+            .chat_completion_stream(&sample_params(), NoHooks)
+            .await
+            .expect("stream should open on a 200 response");
+
+        let mut chunks = Vec::new();
+        while let Some(item) = stream.next().await {
+            chunks.push(item.expect("chunk should parse"));
+        }
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].id.as_deref(), Some("chatcmpl-test"));
+        assert_eq!(chunks[0].choices.len(), 1);
+    }
+}
