@@ -13,7 +13,7 @@ shai is a coding agent, your pair programming buddy that lives in the terminal. 
 - **Project context** — Load project-specific information via `AGENTS.md` files
 - **MCP Support** — Configure specialized agents with MCP and OAuth support
 - **Skills** — Extend shai with composable, on-demand procedural instructions
-- **Multiple LLM providers** — Works with OVHCloud, OpenAI, Anthropic, Mistral, Ollama, OpenRouter
+- **Multiple LLM providers** — Works with OVHcloud, OpenAI, Anthropic, Mistral, Ollama, OpenRouter
 
 ## Installation
 
@@ -33,7 +33,7 @@ The `shai` binary will be installed in `$HOME/.local/bin`
 
 ## Quick Start
 
-By default `shai` uses OVHCloud as an anonymous user meaning you will be rate limited! If you want to sign in with your account or select another provider, run:
+By default `shai` uses OVHcloud as an anonymous user meaning you will be rate limited! If you want to sign in with your account or select another provider, run:
 
 ```bash
 shai auth
@@ -121,9 +121,9 @@ shai status   # Check if shai is active
 
 ## Configuration
 
-### Compatible OVHCloud endpoints
+### Compatible OVHcloud endpoints
 
-OVHCloud [AI Endpoints](https://www.ovhcloud.com/en/public-cloud/ai-endpoints/) provides OpenAI-compatible LLM endpoints for using shai with tools. Follow the official [getting started guide](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started) to create a [Public Cloud project](https://www.ovh.com/manager/#/public-cloud) and then generate an API key from the `AI Endpoints` section of the control panel.
+OVHcloud [AI Endpoints](https://www.ovhcloud.com/en/public-cloud/ai-endpoints/) provides OpenAI-compatible LLM endpoints for using shai with tools. Follow the official [getting started guide](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-getting-started) to create a [Public Cloud project](https://www.ovh.com/manager/#/public-cloud) and then generate an API key from the `AI Endpoints` section of the control panel.
 
 Authenticating with an API key raises the rate limit from **2 requests per minute** (anonymous, per IP and model) to **400 requests per minute** (per project and model).
 
