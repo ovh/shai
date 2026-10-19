@@ -67,6 +67,58 @@ pub fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<
         .and_then(parse_retry_after)
 }
 
+/// Detect provider errors meaning the prompt no longer fits in the model's
+/// context window, and turn them into an actionable message.
+///
+/// OpenAI-compatible servers built on vLLM (e.g. OVHcloud AI Endpoints) compute
+/// `max_tokens = context_window - prompt_tokens` when the request does not set
+/// it, so an over-long conversation surfaces as the cryptic
+/// `max_tokens must be at least 1, got -17032`. Other providers report the
+/// same condition with different wording.
+///
+/// Returns `None` when `raw` is not a context-overflow error.
+pub fn describe_context_overflow(raw: &str) -> Option<String> {
+    let lower = raw.to_lowercase();
+
+    let overflow_by = if lower.contains("max_tokens must be at least 1") {
+        // vLLM: "max_tokens must be at least 1, got -17032."
+        Some(
+            regex::Regex::new(r"got\s+-(\d+)")
+                .ok()
+                .and_then(|re| re.captures(&lower))
+                .and_then(|c| c.get(1))
+                .and_then(|m| m.as_str().parse::<u64>().ok()),
+        )
+    } else if lower.contains("maximum context length")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("context window")
+        || lower.contains("prompt is too long")
+    {
+        Some(None)
+    } else {
+        None
+    }?;
+
+    let size = match overflow_by {
+        Some(n) => format!(" (about {} tokens over the model's limit)", n),
+        None => String::new(),
+    };
+
+    Some(format!(
+        "Context window exceeded: the conversation no longer fits in the model's context window{}. \
+         Start a new session, or lower `compaction.max_trace_chars` in your agent config so older \
+         tool output is compacted sooner. Provider error: {}",
+        size,
+        raw.trim()
+    ))
+}
+
+/// Format an LLM error for display, rewriting known cryptic provider errors
+/// (see [`describe_context_overflow`]) and passing everything else through.
+pub fn describe_llm_error(raw: &str) -> String {
+    describe_context_overflow(raw).unwrap_or_else(|| raw.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +166,42 @@ mod tests {
     fn test_rate_limited_error_display() {
         let err = RateLimitedError::new(429, Some(Duration::from_secs(2)), "slow down".into());
         assert_eq!(err.to_string(), "HTTP 429: slow down");
+    }
+
+    #[test]
+    fn test_context_overflow_vllm_negative_max_tokens() {
+        // Error body reported in #97 (OVHcloud gpt-oss-120b)
+        let raw = r#"{"message":"{\"error\":{\"message\":\"max_tokens must be at least 1, got -17032.\",\"type\":\"BadRequestError\",\"param\":null,\"code\":400}}"}"#;
+        let msg = describe_context_overflow(raw).expect("should be detected");
+        assert!(msg.starts_with("Context window exceeded"));
+        assert!(msg.contains("about 17032 tokens over"));
+        assert!(msg.contains("compaction.max_trace_chars"));
+        // original provider error is kept for debugging
+        assert!(msg.contains("got -17032"));
+    }
+
+    #[test]
+    fn test_context_overflow_other_providers() {
+        for raw in [
+            "This model's maximum context length is 131072 tokens. However, you requested 140000 tokens",
+            r#"{"error":{"code":"context_length_exceeded"}}"#,
+            "prompt is too long: 210000 tokens > 200000 maximum",
+        ] {
+            let msg = describe_context_overflow(raw).expect(raw);
+            assert!(msg.starts_with("Context window exceeded"), "{}", raw);
+            assert!(!msg.contains("tokens over"), "{}", raw);
+        }
+    }
+
+    #[test]
+    fn test_unrelated_errors_pass_through() {
+        for raw in [
+            "HTTP 429: rate limited",
+            "max_tokens must be a positive integer",
+            "invalid api key",
+        ] {
+            assert_eq!(describe_context_overflow(raw), None, "{}", raw);
+            assert_eq!(describe_llm_error(raw), raw);
+        }
     }
 }

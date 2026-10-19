@@ -171,7 +171,7 @@ impl Brain for CoderBrain {
                 context.method,
             )
             .await
-            .map_err(|e| AgentError::LlmError(e.to_string()))?;
+            .map_err(|e| AgentError::LlmError(shai_llm::describe_llm_error(&e.to_string())))?;
 
         // Extract token usage information
         let token_usage = brain_decision.usage.as_ref().map(|usage| {
