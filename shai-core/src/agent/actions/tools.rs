@@ -495,8 +495,14 @@ mod tests {
         let fs_log = Arc::new(FsOperationLog::new());
         let todo_storage = Arc::new(TodoStorage::new());
         Arc::from(
-            create_tool(name, fs_log, todo_storage, &[])
-                .unwrap_or_else(|| panic!("create_tool returned None for '{}'", name)),
+            create_tool(
+                name,
+                fs_log,
+                todo_storage,
+                &[],
+                &crate::tools::BashToolConfig::default(),
+            )
+            .unwrap_or_else(|| panic!("create_tool returned None for '{}'", name)),
         )
     }
 

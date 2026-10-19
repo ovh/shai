@@ -19,7 +19,7 @@ pub use types::{
 };
 
 // Re-export all tools
-pub use bash::BashTool;
+pub use bash::{resolve_timeout_secs, BashTool, BashToolConfig, BashToolParams};
 pub use fetch::FetchTool;
 pub use fs::{
     EditTool, FindTool, FsOperation, FsOperationLog, FsOperationSummary, FsOperationType, LsTool,
@@ -59,9 +59,10 @@ pub fn create_tool(
     fs_log: std::sync::Arc<FsOperationLog>,
     todo_storage: std::sync::Arc<TodoStorage>,
     exclude_patterns: &[String],
+    bash_config: &BashToolConfig,
 ) -> Option<Box<dyn AnyTool>> {
     match name {
-        "bash" => Some(Box::new(BashTool::new())),
+        "bash" => Some(Box::new(BashTool::with_config(bash_config.clone()))),
         "edit" => Some(Box::new(EditTool::new(fs_log))),
         "fetch" => Some(Box::new(FetchTool::new())),
         "find" => Some(Box::new(
@@ -96,7 +97,7 @@ mod tests {
     fn make_tool(name: &str) -> Box<dyn AnyTool> {
         let fs_log = Arc::new(FsOperationLog::new());
         let todo_storage = Arc::new(TodoStorage::new());
-        create_tool(name, fs_log, todo_storage, &[])
+        create_tool(name, fs_log, todo_storage, &[], &BashToolConfig::default())
             .unwrap_or_else(|| panic!("create_tool returned None for '{}'", name))
     }
 
