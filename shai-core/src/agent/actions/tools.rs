@@ -82,6 +82,14 @@ impl AgentCore {
             match Self::tool_exist(tool_ctx.available_tools.clone(), tc) {
                 // tool does not exist, we fail immediately
                 Err(tool_result) => {
+                    // Answer the tool call in the trace so the LLM sees the error
+                    // (and the list of available tools) on its next step. Without
+                    // this the assistant tool_call has no matching tool message and
+                    // the model keeps retrying the same unknown tool.
+                    trace.write().await.push(ChatMessage::Tool {
+                        tool_call_id: tc_for_error.id.clone(),
+                        content: ChatMessageContent::Text(tool_result.to_string()),
+                    });
                     if let Some(tx) = public_event_tx.clone() {
                         let _ = tx.send(AgentEvent::ToolCallCompleted {
                             duration: TimeDelta::zero(),
@@ -320,6 +328,8 @@ impl AgentCore {
                     // Emit tool call finish event
                     let tool_was_denied = result.is_denied();
                     info!(target: "agent::tool_completed", call = ?tc_for_error.function.name.clone(), result = ?result);
+                    // Capture the resolved name before `call` moves into ToolCallCompleted.
+                    let resolved_tool_name = call.tool_name.clone();
                     if let Some(tx) = public_event_tx.clone() {
                         let _ = tx.send(AgentEvent::ToolCallCompleted {
                             duration: Utc::now() - start,
@@ -330,8 +340,10 @@ impl AgentCore {
                         });
                     }
 
-                    // Emit TodoUpdated event after todo_write executes
-                    if tc_for_error.function.name == "todo_write" {
+                    // Emit TodoUpdated after todo_write executes. Use the resolved
+                    // tool_name (not the raw LLM function name) so namespaced /
+                    // harmony-suffixed aliases still refresh the TUI.
+                    if resolved_tool_name == "todo_write" {
                         let todos = todo_storage.get_all().await;
                         if let Some(tx) = public_event_tx.clone() {
                             let _ = tx.send(AgentEvent::TodoUpdated { todos });
@@ -462,9 +474,22 @@ impl AgentCore {
                         params = parsed;
                     }
                 }
+                let available: Vec<String> = tools.iter().map(|t| t.name()).collect();
+                let tool_name = match resolve_tool_name(&tc.function.name, &available) {
+                    Some(resolved) => {
+                        if resolved != tc.function.name {
+                            debug!(target: "agent::tool", requested = %tc.function.name, resolved = %resolved, "resolved tool alias");
+                            if resolved == "find" {
+                                adapt_find_alias_params(&mut params);
+                            }
+                        }
+                        resolved
+                    }
+                    None => tc.function.name.clone(),
+                };
                 let tool_call = ToolCall {
                     tool_call_id: tc.id.clone(),
-                    tool_name: tc.function.name.clone(),
+                    tool_name,
                     parameters: params,
                 };
 
@@ -474,7 +499,6 @@ impl AgentCore {
                     .find(|t| t.name() == tool_call.tool_name)
                     .cloned()
                     .ok_or_else(|| {
-                        let available: Vec<String> = tools.iter().map(|t| t.name()).collect();
                         ToolResult::error(format!(
                             "tool not found: '{}'. Available tools: {}",
                             tool_call.tool_name,
@@ -483,6 +507,47 @@ impl AgentCore {
                     })
                     .map(|tool| (tool, tool_call))
             })
+    }
+}
+
+/// Map a tool name emitted by the LLM onto an available tool.
+///
+/// Exact names always win. Otherwise this tolerates artifacts that some models
+/// (notably gpt-oss, trained on the harmony format with built-in `browser.search`
+/// style tools) emit: a namespace prefix (`functions.find`), trailing harmony
+/// control tokens (`find<|channel|>commentary`), and the generic `search`/`grep`
+/// names for the `find` tool.
+fn resolve_tool_name(requested: &str, available: &[String]) -> Option<String> {
+    let has = |name: &str| available.iter().any(|a| a == name);
+
+    if has(requested) {
+        return Some(requested.to_string());
+    }
+
+    let mut name = requested.trim();
+    if let Some(idx) = name.find("<|") {
+        name = &name[..idx];
+    }
+    let base = name.rsplit('.').next().unwrap_or(name).trim();
+    if !base.is_empty() && has(base) {
+        return Some(base.to_string());
+    }
+
+    match base {
+        "search" | "grep" if has("find") => Some("find".to_string()),
+        _ => None,
+    }
+}
+
+/// When a `search`/`grep` call is redirected to `find`, accept `query` as the
+/// search pattern if `pattern` is missing.
+fn adapt_find_alias_params(params: &mut serde_json::Value) {
+    if let Some(obj) = params.as_object_mut() {
+        if !obj.contains_key("pattern") {
+            if let Some(query) = obj.remove("query") {
+                obj.insert("pattern".to_string(), query);
+            }
+        }
     }
 }
 
@@ -656,5 +721,105 @@ mod tests {
         )
         .await;
         assert!(result.is_success());
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn llm_call(name: &str, args: serde_json::Value) -> LlmToolCall {
+        serde_json::from_value(serde_json::json!({
+            "id": "call_1",
+            "type": "function",
+            "function": { "name": name, "arguments": args.to_string() }
+        }))
+        .expect("valid tool call")
+    }
+
+    #[test]
+    fn resolve_tool_name_exact_match_wins() {
+        let available = names(&["find", "search", "read"]);
+        assert_eq!(
+            resolve_tool_name("search", &available).as_deref(),
+            Some("search")
+        );
+        assert_eq!(
+            resolve_tool_name("find", &available).as_deref(),
+            Some("find")
+        );
+    }
+
+    #[test]
+    fn resolve_tool_name_handles_gpt_oss_artifacts() {
+        let available = names(&["find", "read", "ls"]);
+        assert_eq!(
+            resolve_tool_name("search", &available).as_deref(),
+            Some("find")
+        );
+        assert_eq!(
+            resolve_tool_name("grep", &available).as_deref(),
+            Some("find")
+        );
+        assert_eq!(
+            resolve_tool_name("functions.read", &available).as_deref(),
+            Some("read")
+        );
+        assert_eq!(
+            resolve_tool_name("repo_browser.search", &available).as_deref(),
+            Some("find")
+        );
+        assert_eq!(
+            resolve_tool_name("ls<|channel|>commentary", &available).as_deref(),
+            Some("ls")
+        );
+    }
+
+    #[test]
+    fn resolve_tool_name_unknown_stays_unknown() {
+        assert_eq!(resolve_tool_name("search", &names(&["read", "ls"])), None);
+        assert_eq!(
+            resolve_tool_name("browser.open", &names(&["find", "read"])),
+            None
+        );
+        assert_eq!(resolve_tool_name("", &names(&["find"])), None);
+    }
+
+    #[test]
+    fn tool_exist_redirects_search_to_find() {
+        let tools = vec![make_tool("find"), make_tool("read")];
+        let (tool, call) = AgentCore::tool_exist(
+            tools,
+            llm_call("search", serde_json::json!({"query": "fn main"})),
+        )
+        .unwrap_or_else(|_| panic!("search should resolve to find"));
+        assert_eq!(tool.name(), "find");
+        assert_eq!(call.tool_name, "find");
+        assert_eq!(call.parameters["pattern"], "fn main");
+        assert!(call.parameters.get("query").is_none());
+    }
+
+    #[test]
+    fn tool_exist_keeps_explicit_pattern() {
+        let tools = vec![make_tool("find")];
+        let (_, call) = AgentCore::tool_exist(
+            tools,
+            llm_call(
+                "grep",
+                serde_json::json!({"pattern": "foo", "query": "bar"}),
+            ),
+        )
+        .unwrap_or_else(|_| panic!("grep should resolve to find"));
+        assert_eq!(call.parameters["pattern"], "foo");
+    }
+
+    #[test]
+    fn tool_exist_unknown_tool_lists_available_tools() {
+        let tools = vec![make_tool("read"), make_tool("ls")];
+        let err = match AgentCore::tool_exist(tools, llm_call("search", serde_json::json!({}))) {
+            Ok(_) => panic!("search must not resolve without find"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("tool not found: 'search'"), "{}", err);
+        assert!(err.contains("read") && err.contains("ls"), "{}", err);
     }
 }
