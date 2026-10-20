@@ -15,6 +15,10 @@ jobs:
             target: x86_64-unknown-linux-musl
             binary_name: shai
             asset_name: shai-unstable-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            binary_name: shai
+            asset_name: shai-unstable-linux-aarch64
           #- os: windows-latest
           #  target: x86_64-pc-windows-msvc
           #  binary_name: shai.exe
@@ -38,14 +42,14 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential musl-tools
 
       - name: Add musl target (Linux)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: rustup target add x86_64-unknown-linux-musl
+        if: endsWith(matrix.target, '-linux-musl')
+        run: rustup target add ${{ matrix.target }}
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -120,6 +124,7 @@ jobs:
             --notes "Automated unstable build from commit ${{ github.sha }}" \
             --prerelease \
             shai-unstable-linux-x86_64/shai-unstable-linux-x86_64 \
+            shai-unstable-linux-aarch64/shai-unstable-linux-aarch64 \
             shai-unstable-macos-x86_64/shai-unstable-macos-x86_64 \
             shai-unstable-macos-aarch64/shai-unstable-macos-aarch64
         env:
