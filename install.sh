@@ -65,7 +65,7 @@ detect_platform() {
             platform="macos-aarch64"
         fi
     elif [ "$os" = "linux" ]; then
-        platform="linux-x86_64"
+        platform="linux-${arch}"
     elif [ "$os" = "windows" ]; then
         platform="windows-x86_64.exe"
         BINARY_NAME="${BINARY_NAME}.exe"
@@ -211,6 +211,7 @@ main() {
         log_error "Could not find download URL for platform: $platform"
         log_error "Available assets:"
         echo "$release_json" | grep -o "\"name\":[[:space:]]*\"[^\"]*\"" | cut -d'"' -f4
+        log_error "No prebuilt binary for $platform in this release. To build from source, see https://github.com/$REPO#development"
         exit 1
     fi
     
