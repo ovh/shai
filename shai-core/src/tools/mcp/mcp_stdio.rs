@@ -1,14 +1,12 @@
 use async_trait::async_trait;
 use rmcp::{
-    model::CallToolRequestParam,
     service::{RunningService, ServiceExt},
     transport::TokioChildProcess,
     RoleClient,
 };
-use std::borrow::Cow;
 use tokio::process::Command;
 
-use super::mcp::{McpClient, McpToolDescription};
+use super::mcp::{call_tool_params, content_to_string, McpClient, McpToolDescription};
 use crate::tools::{ToolCall, ToolResult};
 
 pub struct StdioClient {
@@ -77,29 +75,8 @@ impl McpClient for StdioClient {
     ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
 
-        let result = service
-            .call_tool(CallToolRequestParam {
-                name: Cow::Owned(tool_call.tool_name.clone()),
-                arguments: tool_call.parameters.as_object().cloned(),
-            })
-            .await?;
+        let result = service.call_tool(call_tool_params(&tool_call)).await?;
 
-        let content = result
-            .content
-            .into_iter()
-            .map(|c| match c.raw {
-                rmcp::model::RawContent::Text(text_content) => text_content.text,
-                rmcp::model::RawContent::Image(image_data) => {
-                    format!("[Image: {} bytes]", image_data.data.len())
-                }
-                rmcp::model::RawContent::Resource(_) => "[Resource]".to_string(),
-                rmcp::model::RawContent::Audio(audio_data) => {
-                    format!("[Audio: {} bytes]", audio_data.data.len())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        Ok(ToolResult::success(content))
+        Ok(ToolResult::success(content_to_string(result.content)))
     }
 }

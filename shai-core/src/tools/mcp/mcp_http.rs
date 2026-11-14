@@ -1,22 +1,20 @@
 use async_trait::async_trait;
 use rmcp::{
-    model::{
-        CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation,
-        InitializeRequestParam,
-    },
+    model::{ClientCapabilities, ClientInfo, Implementation, InitializeRequestParams},
     service::{RunningService, ServiceExt},
-    transport::StreamableHttpClientTransport,
+    transport::{
+        streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport,
+    },
     RoleClient,
 };
-use std::borrow::Cow;
 
-use super::mcp::{McpClient, McpToolDescription};
+use super::mcp::{call_tool_params, content_to_string, McpClient, McpToolDescription};
 use crate::tools::{ToolCall, ToolResult};
 
 pub struct HttpClient {
     url: String,
     bearer_token: Option<String>,
-    service: Option<RunningService<RoleClient, InitializeRequestParam>>,
+    service: Option<RunningService<RoleClient, InitializeRequestParams>>,
 }
 
 impl HttpClient {
@@ -42,35 +40,18 @@ impl McpClient for HttpClient {
         }
 
         let transport = if let Some(token) = &self.bearer_token {
-            // Create a custom reqwest client with default bearer token
-            let mut default_headers = reqwest::header::HeaderMap::new();
-            default_headers.insert(
-                reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))?,
-            );
-            let client = reqwest::Client::builder()
-                .default_headers(default_headers)
-                .build()?;
-
-            StreamableHttpClientTransport::with_client(
-                client,
-                rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
-                    uri: self.url.clone().into(),
-                    ..Default::default()
-                },
+            StreamableHttpClientTransport::from_config(
+                StreamableHttpClientTransportConfig::with_uri(self.url.as_str())
+                    .auth_header(token.as_str()),
             )
         } else {
             StreamableHttpClientTransport::from_uri(self.url.as_str())
         };
 
-        let client_info = ClientInfo {
-            protocol_version: Default::default(),
-            capabilities: ClientCapabilities::default(),
-            client_info: Implementation {
-                name: "shai-mcp-http-client".to_string(),
-                version: "0.1.0".to_string(),
-            },
-        };
+        let client_info = ClientInfo::new(
+            ClientCapabilities::default(),
+            Implementation::new("shai-mcp-http-client", "0.1.0"),
+        );
         let service = client_info.serve(transport).await?;
 
         // Give the server a moment to process the initialization
@@ -112,29 +93,8 @@ impl McpClient for HttpClient {
     ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
 
-        let result = service
-            .call_tool(CallToolRequestParam {
-                name: Cow::Owned(tool_call.tool_name.clone()),
-                arguments: tool_call.parameters.as_object().cloned(),
-            })
-            .await?;
+        let result = service.call_tool(call_tool_params(&tool_call)).await?;
 
-        let content = result
-            .content
-            .into_iter()
-            .map(|c| match c.raw {
-                rmcp::model::RawContent::Text(text_content) => text_content.text,
-                rmcp::model::RawContent::Image(image_data) => {
-                    format!("[Image: {} bytes]", image_data.data.len())
-                }
-                rmcp::model::RawContent::Resource(_) => "[Resource]".to_string(),
-                rmcp::model::RawContent::Audio(audio_data) => {
-                    format!("[Audio: {} bytes]", audio_data.data.len())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        Ok(ToolResult::success(content))
+        Ok(ToolResult::success(content_to_string(result.content)))
     }
 }
