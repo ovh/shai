@@ -1,5 +1,6 @@
 use super::config::ShaiConfig;
 use crate::tools::mcp::McpConfig;
+use crate::tools::BashToolConfig;
 use json_comments::StripComments;
 use serde::{Deserialize, Serialize};
 use shai_llm::ToolCallMethod;
@@ -35,6 +36,9 @@ pub struct AgentTools {
     pub builtin_excluded: Vec<String>,
     #[serde(default)]
     pub mcp: HashMap<String, McpToolConfig>,
+    /// Limits for the built-in bash tool (default / max timeout).
+    #[serde(default)]
+    pub bash: BashToolConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,6 +251,7 @@ impl Default for AgentTools {
             builtin: vec!["*".to_string()],
             builtin_excluded: Vec::new(),
             mcp: HashMap::new(),
+            bash: BashToolConfig::default(),
         }
     }
 }

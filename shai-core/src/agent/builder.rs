@@ -136,6 +136,7 @@ impl AgentBuilder {
                     fs_log.clone(),
                     todo_storage.clone(),
                     &exclude_patterns,
+                    &crate::tools::BashToolConfig::default(),
                 )
             })
             .collect();
@@ -310,6 +311,7 @@ impl AgentBuilder {
                 fs_log.clone(),
                 todo_storage.clone(),
                 &config.compaction.find_exclude_patterns.clone(),
+                &config.tools.bash,
             ) {
                 Some(tool) => tools.push(tool),
                 None => {

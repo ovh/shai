@@ -5,4 +5,4 @@ pub mod structs;
 mod tests;
 
 pub use bash::BashTool;
-pub use structs::BashToolParams;
+pub use structs::{resolve_timeout_secs, BashToolConfig, BashToolParams};
