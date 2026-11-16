@@ -11,11 +11,11 @@ use crate::agent::agent::ToolContext;
 use crate::config::agent::{AgentConfig, CompactionConfig, VerificationConfig};
 use crate::config::config::ShaiConfig;
 use crate::runners::coder::CoderBrain;
-use crate::tools::mcp::mcp_oauth::signin_oauth;
+use crate::tools::mcp::mcp_config::{create_mcp_client_with_store, McpCredentialStore};
 use crate::tools::skills::SkillTool;
 use crate::tools::{
-    create_mcp_client, create_tool, get_mcp_tools, AnyTool, FsOperationLog, McpConfig,
-    McpServerStatus, TodoStorage, TOOL_NAMES,
+    create_tool, get_mcp_tools, AnyTool, FsOperationLog, McpConfig, McpServerStatus, TodoStorage,
+    TOOL_NAMES,
 };
 
 use tracing::{debug, warn};
@@ -325,34 +325,19 @@ impl AgentBuilder {
 
         // Add MCP tools
         let mut config_changed = false;
+        let agent_name = config.name.clone();
         for (mcp_name, mcp_tool_config) in &mut config.tools.mcp {
-            // Try to check OAuth and connect
-            let oauth_result = Self::mcp_check_oauth(mcp_name, &mut mcp_tool_config.config).await;
-
-            match oauth_result {
-                Ok(oauth_changed) => {
-                    if oauth_changed {
-                        config_changed = true;
-                    }
-                }
-                Err(e) => {
-                    if mcp_tool_config.required {
-                        return Err(e);
-                    } else {
-                        warn!(target: "agent::builder", "MCP '{}' failed to connect: {}. Skipping (not required).", mcp_name, e);
-                        mcp_status.push(McpServerStatus {
-                            name: mcp_name.clone(),
-                            connected: false,
-                            tool_count: 0,
-                            error: Some(e.to_string()),
-                        });
-                        continue;
-                    }
-                }
-            }
-
-            // Get all tools from MCP client
-            let mcp_client = create_mcp_client(mcp_tool_config.config.clone());
+            let credential_store =
+                McpCredentialStore::for_agent(&agent_name, mcp_name).map_err(|error| {
+                    AgentError::ConfigurationError(format!(
+                        "Failed to initialize OAuth credential store for MCP '{}': {}",
+                        mcp_name, error
+                    ))
+                })?;
+            let mcp_client = create_mcp_client_with_store(
+                mcp_tool_config.config.clone(),
+                credential_store.clone(),
+            );
             let mcp_tools_result = get_mcp_tools(mcp_client, mcp_name).await;
 
             let all_mcp_tools = match mcp_tools_result {
@@ -375,6 +360,21 @@ impl AgentBuilder {
                     }
                 }
             };
+
+            if let McpConfig::Http { auth, .. } = &mut mcp_tool_config.config {
+                if auth.is_some() {
+                    match credential_store.has_saved_credentials().await {
+                        Ok(true) => {
+                            *auth = None;
+                            config_changed = true;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            warn!(target: "agent::builder", "Failed to verify migrated OAuth credentials for MCP '{}': {}", mcp_name, error);
+                        }
+                    }
+                }
+            }
 
             // Count tools before filtering
             let mut added_count = 0;
@@ -425,7 +425,7 @@ impl AgentBuilder {
             });
         }
 
-        // Save config if OAuth flow added new tokens
+        // Remove embedded legacy tokens after OAuth credentials are saved
         if config_changed {
             config.save().map_err(|e| {
                 AgentError::ConfigurationError(format!("Failed to save agent config: {}", e))
@@ -433,74 +433,5 @@ impl AgentBuilder {
         }
 
         Ok((tools, todo_storage, mcp_status))
-    }
-
-    /// Handle OAuth flow for MCP connections if needed
-    async fn mcp_check_oauth(
-        mcp_name: &str,
-        mcp_config: &mut McpConfig,
-    ) -> Result<bool, AgentError> {
-        use crate::tools::mcp::McpConfig;
-        let mut config_changed = false;
-
-        // Only handle HTTP configs that might need OAuth
-        if let McpConfig::Http { url, auth } = mcp_config {
-            let needs_new_token = match auth {
-                Some(token) if token.is_expired() => {
-                    debug!(target: "agent::builder", "MCP '{}' token expired, refreshing...", mcp_name);
-                    true
-                }
-                Some(_) => {
-                    // Test connection with existing token
-                    let test_config = McpConfig::Http {
-                        url: url.clone(),
-                        auth: auth.clone(),
-                    };
-                    let mut test_client = create_mcp_client(test_config);
-                    if test_client.connect().await.is_ok() {
-                        debug!(target: "agent::builder", "MCP '{}' connected (authenticated)", mcp_name);
-                        false
-                    } else {
-                        debug!(target: "agent::builder", "MCP '{}' authentication failed, refreshing token...", mcp_name);
-                        true
-                    }
-                }
-                None => {
-                    // Test connection without auth
-                    let test_config = McpConfig::Http {
-                        url: url.clone(),
-                        auth: None,
-                    };
-                    let mut test_client = create_mcp_client(test_config);
-                    if test_client.connect().await.is_ok() {
-                        debug!(target: "agent::builder", "MCP '{}' connected (no auth required)", mcp_name);
-                        false
-                    } else {
-                        debug!(target: "agent::builder", "MCP '{}' requires authentication, starting OAuth flow...", mcp_name);
-                        true
-                    }
-                }
-            };
-
-            if needs_new_token {
-                let url_clone = url.clone();
-                match signin_oauth(&url_clone).await {
-                    Ok(token) => {
-                        debug!(target: "agent::builder", "MCP '{}' OAuth successful", mcp_name);
-                        *auth = Some(token);
-                        config_changed = true;
-                    }
-                    Err(e) => {
-                        return Err(AgentError::ConfigurationError(format!(
-                            "OAuth failed for MCP '{}': {}",
-                            mcp_name, e
-                        )));
-                    }
-                }
-            }
-        }
-        // SSE and Stdio don't need OAuth handling for now
-
-        Ok(config_changed)
     }
 }

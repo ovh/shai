@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use rmcp::model::{CallToolRequestParams, Content};
+use rmcp::model::{CallToolRequestParams, ContentBlock};
 use shai_llm::ToolDescription;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -21,15 +21,15 @@ pub(super) fn call_tool_params(call: &ToolCall) -> CallToolRequestParams {
     }
 }
 
-pub(super) fn content_to_string(content: Vec<Content>) -> String {
+pub(super) fn content_to_string(content: Vec<ContentBlock>) -> String {
     content
         .into_iter()
-        .map(|c| match c.raw {
-            rmcp::model::RawContent::Text(text) => text.text,
-            rmcp::model::RawContent::Image(image) => {
+        .map(|c| match c {
+            ContentBlock::Text(text) => text.text,
+            ContentBlock::Image(image) => {
                 format!("[Image: {} bytes]", image.data.len())
             }
-            rmcp::model::RawContent::Audio(audio) => {
+            ContentBlock::Audio(audio) => {
                 format!("[Audio: {} bytes]", audio.data.len())
             }
             _ => "[Resource]".to_string(),

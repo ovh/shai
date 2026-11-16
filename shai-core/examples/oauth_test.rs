@@ -1,27 +1,29 @@
-use shai_core::tools::mcp::mcp_oauth::signin_oauth;
+use shai_core::tools::mcp::{HttpClient, McpClient};
 
 #[tokio::main]
 async fn main() {
-    println!("🚀 Starting OAuth flow test...");
+    println!("Starting OAuth flow test...");
 
-    match signin_oauth("https://mcp.eu.ovhcloud.com/").await {
-        Ok(token) => {
-            println!("✅ OAuth flow completed successfully!");
-            println!("🎫 Access Token: {}", token.access_token);
-            println!("🔑 Token length: {} characters", token.access_token.len());
-            if let Some(expires_at) = token.expires_at {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64;
-                let seconds_until_expiry = expires_at - now;
-                println!("⏰ Token expires in {} seconds", seconds_until_expiry);
-            } else {
-                println!("⏰ Token has no expiration");
+    let mut client = HttpClient::new("https://mcp.eu.ovhcloud.com/".to_string());
+    match client.connect().await {
+        Ok(()) => match client.list_tools().await {
+            Ok(tools) => {
+                println!(
+                    "OAuth flow completed successfully with {} tools available",
+                    tools.len()
+                );
+                if let Err(error) = client.disconnect().await {
+                    eprintln!("Failed to disconnect: {error}");
+                    std::process::exit(1);
+                }
             }
-        }
-        Err(e) => {
-            println!("❌ OAuth flow failed: {}", e);
+            Err(error) => {
+                eprintln!("Failed to list tools after OAuth: {error}");
+                std::process::exit(1);
+            }
+        },
+        Err(error) => {
+            eprintln!("OAuth flow failed: {error}");
             std::process::exit(1);
         }
     }

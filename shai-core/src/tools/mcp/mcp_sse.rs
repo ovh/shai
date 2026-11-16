@@ -1,10 +1,7 @@
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use rmcp::{
-    model::{
-        ClientCapabilities, ClientInfo, Implementation, InitializeRequestParams,
-        ServerJsonRpcMessage,
-    },
+    model::{ClientConfig, ServerJsonRpcMessage},
     service::{RunningService, ServiceExt},
     transport::Transport,
     RoleClient,
@@ -18,7 +15,7 @@ use crate::tools::{ToolCall, ToolResult};
 
 pub struct SseClient {
     url: String,
-    service: Option<RunningService<RoleClient, InitializeRequestParams>>,
+    service: Option<RunningService<RoleClient, ClientConfig>>,
 }
 
 impl SseClient {
@@ -36,11 +33,7 @@ impl McpClient for SseClient {
         }
 
         let transport = LegacySseTransport::start(&self.url).await?;
-        let client_info = ClientInfo::new(
-            ClientCapabilities::default(),
-            Implementation::new("shai-mcp-sse-client", "0.1.0"),
-        );
-        let service = client_info.serve(transport).await?;
+        let service = ClientConfig::default().serve(transport).await?;
         self.service = Some(service);
         Ok(())
     }

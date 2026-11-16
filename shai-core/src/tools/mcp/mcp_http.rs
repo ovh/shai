@@ -1,20 +1,28 @@
 use async_trait::async_trait;
 use rmcp::{
-    model::{ClientCapabilities, ClientInfo, Implementation, InitializeRequestParams},
-    service::{RunningService, ServiceExt},
+    model::ClientConfig,
+    service::{ClientInitializeError, RunningService, ServiceExt},
     transport::{
-        streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport,
+        auth::{AuthClient, AuthorizationManager},
+        streamable_http_client::StreamableHttpClientTransportConfig,
+        StreamableHttpClientTransport,
     },
     RoleClient,
 };
 
-use super::mcp::{call_tool_params, content_to_string, McpClient, McpToolDescription};
+use super::{
+    mcp::{call_tool_params, content_to_string, McpClient, McpToolDescription},
+    mcp_config::{McpCredentialStore, OAuthToken},
+    mcp_oauth::{authorize, default_browser_opener, BrowserOpener},
+};
 use crate::tools::{ToolCall, ToolResult};
 
 pub struct HttpClient {
     url: String,
-    bearer_token: Option<String>,
-    service: Option<RunningService<RoleClient, InitializeRequestParams>>,
+    legacy_token: Option<OAuthToken>,
+    credential_store: McpCredentialStore,
+    open_browser: BrowserOpener,
+    service: Option<RunningService<RoleClient, ClientConfig>>,
 }
 
 impl HttpClient {
@@ -23,41 +31,109 @@ impl HttpClient {
     }
 
     pub fn new_with_auth(url: String, bearer_token: Option<String>) -> Self {
+        let legacy_token = bearer_token.map(|access_token| OAuthToken {
+            access_token,
+            expires_at: None,
+        });
+        Self::with_credential_store(url, legacy_token, McpCredentialStore::in_memory())
+    }
+
+    pub(crate) fn with_credential_store(
+        url: String,
+        legacy_token: Option<OAuthToken>,
+        credential_store: McpCredentialStore,
+    ) -> Self {
         Self {
             url,
-            bearer_token,
+            legacy_token,
+            credential_store,
+            open_browser: default_browser_opener(),
             service: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_browser_opener<F>(mut self, opener: F) -> Self
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        self.open_browser = Arc::new(opener);
+        self
+    }
+
+    async fn manager(&self) -> Result<AuthorizationManager, rmcp::transport::auth::AuthError> {
+        let mut manager = AuthorizationManager::new(self.url.clone()).await?;
+        manager.set_credential_store(self.credential_store.clone());
+        Ok(manager)
+    }
+
+    async fn connect_authorized(
+        &mut self,
+        manager: AuthorizationManager,
+    ) -> Result<(), Box<ClientInitializeError>> {
+        let client = AuthClient::new(reqwest::Client::new(), manager);
+        let transport = StreamableHttpClientTransport::with_client(
+            client,
+            StreamableHttpClientTransportConfig::with_uri(self.url.as_str()),
+        );
+        let service = ClientConfig::default()
+            .serve(transport)
+            .await
+            .map_err(Box::new)?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.service = Some(service);
+        Ok(())
+    }
+
+    async fn connect_legacy(&mut self) -> Result<(), Box<ClientInitializeError>> {
+        let mut config = StreamableHttpClientTransportConfig::with_uri(self.url.as_str());
+        if let Some(token) = self
+            .legacy_token
+            .as_ref()
+            .filter(|token| !token.is_expired())
+        {
+            config = config.auth_header(token.access_token.as_str());
+        }
+        let transport = StreamableHttpClientTransport::from_config(config);
+        let service = ClientConfig::default()
+            .serve(transport)
+            .await
+            .map_err(Box::new)?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.service = Some(service);
+        Ok(())
     }
 }
 
 #[async_trait]
 impl McpClient for HttpClient {
     async fn connect(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Only connect if not already connected
         if self.service.is_some() {
             return Ok(());
         }
 
-        let transport = if let Some(token) = &self.bearer_token {
-            StreamableHttpClientTransport::from_config(
-                StreamableHttpClientTransportConfig::with_uri(self.url.as_str())
-                    .auth_header(token.as_str()),
-            )
+        let mut manager = self.manager().await?;
+        let challenge = if manager.initialize_from_store().await? {
+            match self.connect_authorized(manager).await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.is_authorization_required() => {
+                    error.auth_challenge().map(str::to_owned)
+                }
+                Err(error) => return Err(error.into()),
+            }
         } else {
-            StreamableHttpClientTransport::from_uri(self.url.as_str())
+            match self.connect_legacy().await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.is_authorization_required() => {
+                    error.auth_challenge().map(str::to_owned)
+                }
+                Err(error) => return Err(error.into()),
+            }
         };
 
-        let client_info = ClientInfo::new(
-            ClientCapabilities::default(),
-            Implementation::new("shai-mcp-http-client", "0.1.0"),
-        );
-        let service = client_info.serve(transport).await?;
-
-        // Give the server a moment to process the initialization
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        self.service = Some(service);
+        let manager = self.manager().await?;
+        let manager = authorize(manager, challenge, self.open_browser.clone()).await?;
+        self.connect_authorized(manager).await?;
         Ok(())
     }
 
@@ -98,3 +174,6 @@ impl McpClient for HttpClient {
         Ok(ToolResult::success(content_to_string(result.content)))
     }
 }
+
+#[cfg(test)]
+use std::sync::Arc;
