@@ -178,7 +178,10 @@ pub fn load_active_prompts_from_disk() -> Vec<String> {
 /// Load the bodies of active prompts by name.
 /// Returns a vector of (name, body) pairs.
 pub fn load_active_prompts(names: &[String]) -> Vec<(String, String)> {
-    let prompts = discover_prompts();
+    load_active_prompts_from(names, &discover_prompts())
+}
+
+fn load_active_prompts_from(names: &[String], prompts: &[PromptInfo]) -> Vec<(String, String)> {
     let mut result = Vec::new();
 
     for name in names {
@@ -272,7 +275,7 @@ mod tests {
 
         let prompts = discover_prompts_in_dir(temp_path);
         let names: Vec<String> = prompts.iter().map(|p| p.name.clone()).collect();
-        let loaded = load_active_prompts(&names);
+        let loaded = load_active_prompts_from(&names, &prompts);
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].0, "caveman");
         assert!(loaded[0].1.contains("Be concise."));

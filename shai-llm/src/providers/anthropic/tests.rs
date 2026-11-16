@@ -9,8 +9,7 @@ mod tests {
     use serde_json::json;
 
     fn setup_provider() -> AnthropicProvider {
-        // Assume ANTHROPIC_API_KEY exists in environment
-        AnthropicProvider::from_env().expect("ANTHROPIC_API_KEY must be set for tests")
+        AnthropicProvider::new("test-api-key".to_string())
     }
 
     #[tokio::test]

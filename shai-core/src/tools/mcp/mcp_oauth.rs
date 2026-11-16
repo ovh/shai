@@ -76,11 +76,13 @@ pub(crate) async fn authorize(
             },
         );
     let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
-    let (_, server) =
-        warp::serve(routes).bind_with_graceful_shutdown(callback_address, async move {
+    let server = warp::serve(routes)
+        .bind(callback_address)
+        .await
+        .graceful(async move {
             let _ = shutdown_receiver.await;
         });
-    let server_handle = tokio::spawn(server);
+    let server_handle = tokio::spawn(server.run());
 
     open_browser(session.get_authorization_url());
     let callback = match tokio::time::timeout(Duration::from_secs(300), callback_receiver).await {
