@@ -4,97 +4,49 @@ on:
   release:
     types: [created]
 
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build for ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            binary_name: shai
-            asset_name: shai-linux-x86_64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            binary_name: shai
-            asset_name: shai-linux-aarch64
-          #- os: windows-latest
-          #  target: x86_64-pc-windows-msvc
-          #  binary_name: shai.exe
-          #  asset_name: shai-windows-x86_64.exe
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary_name: shai
-            asset_name: shai-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: shai
-            asset_name: shai-macos-aarch64
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      asset-prefix: shai
 
+  upload-release-assets:
+    name: Upload release assets
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write     # upload the release assets
+      id-token: write     # sign the provenance attestation
+      attestations: write # store the provenance attestation
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download all artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          targets: ${{ matrix.target }}
+          pattern: shai-*
+          path: dist
+          merge-multiple: true
 
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential musl-tools
+      - name: Compute checksums
+        working-directory: dist
+        run: sha256sum shai-* > SHA256SUMS
 
-      - name: Add musl target (Linux)
-        if: endsWith(matrix.target, '-linux-musl')
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
+          subject-path: dist/shai-*
 
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-index-
-
-      - name: Cache target directory
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-target-
-
-      - name: Build binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Prepare binary (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.asset_name }}
-          strip ${{ matrix.asset_name }}
-
-      - name: Prepare binary (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.asset_name }}
-
-      - name: Upload binary to release
-        uses: actions/upload-release-asset@v1
+      - name: Upload binaries to release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ${{ matrix.asset_name }}
-          asset_name: ${{ matrix.asset_name }}
-          asset_content_type: application/octet-stream
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" dist/* --clobber
