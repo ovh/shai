@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use rmcp::model::{CallToolRequestParams, ContentBlock};
 use shai_llm::ToolDescription;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -10,6 +11,31 @@ pub struct McpToolDescription {
     pub name: String,
     pub description: String,
     pub parameters_schema: serde_json::Value,
+}
+
+pub(super) fn call_tool_params(call: &ToolCall) -> CallToolRequestParams {
+    let params = CallToolRequestParams::new(call.tool_name.clone());
+    match call.parameters.as_object() {
+        Some(arguments) => params.with_arguments(arguments.clone()),
+        None => params,
+    }
+}
+
+pub(super) fn content_to_string(content: Vec<ContentBlock>) -> String {
+    content
+        .into_iter()
+        .map(|c| match c {
+            ContentBlock::Text(text) => text.text,
+            ContentBlock::Image(image) => {
+                format!("[Image: {} bytes]", image.data.len())
+            }
+            ContentBlock::Audio(audio) => {
+                format!("[Audio: {} bytes]", audio.data.len())
+            }
+            _ => "[Resource]".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[async_trait]

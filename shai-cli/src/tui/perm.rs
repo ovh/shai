@@ -4,6 +4,7 @@ use std::time::Duration;
 use ansi_to_tui::IntoText;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
+    buffer::CellWidth,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
     symbols::border,
@@ -24,6 +25,40 @@ use super::theme::ThemePalette;
 
 /// Columns moved per Left/Right key press in the preview.
 const H_SCROLL_STEP: usize = 4;
+
+fn crop_preview_start(text: &Text<'_>, offset: usize) -> Text<'static> {
+    let lines = text
+        .lines
+        .iter()
+        .map(|line| {
+            let mut skip = offset;
+            let mut spans = Vec::new();
+            for grapheme in line.styled_graphemes(line.style) {
+                let width = usize::from(grapheme.symbol.cell_width());
+                if skip >= width {
+                    skip -= width;
+                    continue;
+                }
+                if skip > 0 {
+                    spans.push(Span::styled(" ".repeat(width - skip), grapheme.style));
+                    skip = 0;
+                    continue;
+                }
+                spans.push(Span::styled(grapheme.symbol.to_owned(), grapheme.style));
+            }
+            Line {
+                spans,
+                alignment: line.alignment,
+                ..Line::default()
+            }
+        })
+        .collect();
+    Text {
+        lines,
+        alignment: text.alignment,
+        style: text.style,
+    }
+}
 
 pub enum PermissionModalAction {
     Nope,
@@ -280,8 +315,12 @@ impl PermissionWidget<'_> {
 
         // Render scrollable paragraph with colors
         let h_offset = self.h_scroll_offset.min(self.max_h_scroll());
-        let paragraph = Paragraph::new(self.preview_text.clone())
-            .scroll((self.scroll_offset as u16, h_offset as u16));
+        let (preview_text, h_offset) = if h_offset > usize::from(u16::MAX) {
+            (crop_preview_start(&self.preview_text, h_offset), 0)
+        } else {
+            (self.preview_text.clone(), h_offset as u16)
+        };
+        let paragraph = Paragraph::new(preview_text).scroll((self.scroll_offset as u16, h_offset));
         f.render_widget(paragraph, text_area);
 
         // Render scrollbar if content is longer than area
@@ -358,6 +397,19 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    #[test]
+    fn extremely_long_preview_scrolls_to_its_end() {
+        let mut widget = make_widget(&format!("{}END", "a".repeat(65_600)));
+        render(&widget);
+        widget.h_scroll_offset = 65_608;
+        press(&mut widget, KeyCode::Right);
+        let screen = render(&widget);
+        assert!(
+            screen.contains("END"),
+            "end must remain reachable: {screen}"
+        );
     }
 
     #[test]

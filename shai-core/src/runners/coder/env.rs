@@ -178,6 +178,7 @@ pub fn env_all_key() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runners::test_helpers::DIR_TEST_MUTEX;
 
     #[test]
     fn test_get_working_dir() {
@@ -213,6 +214,7 @@ mod tests {
 
     #[test]
     fn test_get_git_branch() {
+        let _guard = DIR_TEST_MUTEX.blocking_lock();
         let branch = get_git_branch();
         assert!(!branch.is_empty());
         println!("{:?}", branch);
@@ -229,6 +231,7 @@ mod tests {
 
     #[test]
     fn test_get_git_status() {
+        let _guard = DIR_TEST_MUTEX.blocking_lock();
         let status = get_git_status();
         assert!(!status.is_empty());
         println!("{:?}", status);
@@ -242,6 +245,7 @@ mod tests {
 
     #[test]
     fn test_get_git_log() {
+        let _guard = DIR_TEST_MUTEX.blocking_lock();
         let log = get_git_log();
         println!("{:?}", log);
         assert!(!log.is_empty());

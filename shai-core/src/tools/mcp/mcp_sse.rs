@@ -1,21 +1,21 @@
 use async_trait::async_trait;
+use futures::TryStreamExt;
 use rmcp::{
-    model::{
-        CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation,
-        InitializeRequestParam,
-    },
+    model::{ClientConfig, ServerJsonRpcMessage},
     service::{RunningService, ServiceExt},
-    transport::SseClientTransport,
+    transport::Transport,
     RoleClient,
 };
-use std::borrow::Cow;
+use std::future::Future;
+use tokio::{io::AsyncBufReadExt, sync::mpsc, task::JoinHandle};
+use tokio_util::io::StreamReader;
 
-use super::mcp::{McpClient, McpToolDescription};
+use super::mcp::{call_tool_params, content_to_string, McpClient, McpToolDescription};
 use crate::tools::{ToolCall, ToolResult};
 
 pub struct SseClient {
     url: String,
-    service: Option<RunningService<RoleClient, InitializeRequestParam>>,
+    service: Option<RunningService<RoleClient, ClientConfig>>,
 }
 
 impl SseClient {
@@ -32,16 +32,8 @@ impl McpClient for SseClient {
             return Ok(());
         }
 
-        let transport = SseClientTransport::start(self.url.as_str()).await?;
-        let client_info = ClientInfo {
-            protocol_version: Default::default(),
-            capabilities: ClientCapabilities::default(),
-            client_info: Implementation {
-                name: "shai-mcp-sse-client".to_string(),
-                version: "0.1.0".to_string(),
-            },
-        };
-        let service = client_info.serve(transport).await?;
+        let transport = LegacySseTransport::start(&self.url).await?;
+        let service = ClientConfig::default().serve(transport).await?;
         self.service = Some(service);
         Ok(())
     }
@@ -78,29 +70,192 @@ impl McpClient for SseClient {
     ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
 
-        let result = service
-            .call_tool(CallToolRequestParam {
-                name: Cow::Owned(tool_call.tool_name.clone()),
-                arguments: tool_call.parameters.as_object().cloned(),
-            })
-            .await?;
+        let result = service.call_tool(call_tool_params(&tool_call)).await?;
 
-        let content = result
-            .content
-            .into_iter()
-            .map(|c| match c.raw {
-                rmcp::model::RawContent::Text(text_content) => text_content.text,
-                rmcp::model::RawContent::Image(image_data) => {
-                    format!("[Image: {} bytes]", image_data.data.len())
-                }
-                rmcp::model::RawContent::Resource(_) => "[Resource]".to_string(),
-                rmcp::model::RawContent::Audio(audio_data) => {
-                    format!("[Audio: {} bytes]", audio_data.data.len())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        Ok(ToolResult::success(content_to_string(result.content)))
+    }
+}
 
-        Ok(ToolResult::success(content))
+struct LegacySseTransport {
+    http: reqwest::Client,
+    message_endpoint: String,
+    messages: mpsc::UnboundedReceiver<ServerJsonRpcMessage>,
+    reader_task: Option<JoinHandle<()>>,
+}
+
+impl LegacySseTransport {
+    async fn start(url: &str) -> std::io::Result<Self> {
+        let response = reqwest::Client::new()
+            .get(url)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .map_err(std::io::Error::other)?
+            .error_for_status()
+            .map_err(std::io::Error::other)?;
+        let (message_tx, messages) = mpsc::unbounded_channel();
+        let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel();
+        let base_url = url.to_string();
+        let reader_task = tokio::spawn(async move {
+            if let Err(error) = read_sse(response, base_url, message_tx, endpoint_tx).await {
+                tracing::debug!(%error, "legacy MCP SSE stream ended");
+            }
+        });
+        let message_endpoint = endpoint_rx
+            .await
+            .map_err(|_| std::io::Error::other("SSE stream ended before endpoint event"))?;
+        Ok(Self {
+            http: reqwest::Client::new(),
+            message_endpoint,
+            messages,
+            reader_task: Some(reader_task),
+        })
+    }
+}
+
+impl Transport<RoleClient> for LegacySseTransport {
+    type Error = std::io::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::model::ClientJsonRpcMessage,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        let http = self.http.clone();
+        let endpoint = self.message_endpoint.clone();
+        async move {
+            http.post(endpoint)
+                .json(&item)
+                .send()
+                .await
+                .map_err(std::io::Error::other)?
+                .error_for_status()
+                .map_err(std::io::Error::other)?;
+            Ok(())
+        }
+    }
+
+    async fn receive(&mut self) -> Option<ServerJsonRpcMessage> {
+        self.messages.recv().await
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        if let Some(task) = self.reader_task.take() {
+            task.abort();
+        }
+        Ok(())
+    }
+}
+
+async fn read_sse(
+    response: reqwest::Response,
+    base_url: String,
+    messages: mpsc::UnboundedSender<ServerJsonRpcMessage>,
+    endpoint: tokio::sync::oneshot::Sender<String>,
+) -> std::io::Result<()> {
+    let stream = response.bytes_stream().map_err(std::io::Error::other);
+    let mut lines = StreamReader::new(stream).lines();
+    let mut event_type = String::new();
+    let mut data = String::new();
+    let mut endpoint = Some(endpoint);
+    while let Some(line) = lines.next_line().await? {
+        if line.is_empty() {
+            dispatch_event(&event_type, &data, &base_url, &messages, &mut endpoint)?;
+            event_type.clear();
+            data.clear();
+        } else if let Some(value) = line.strip_prefix("event:") {
+            event_type = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("data:") {
+            data.push_str(value.strip_prefix(' ').unwrap_or(value));
+            data.push('\n');
+        }
+    }
+    dispatch_event(&event_type, &data, &base_url, &messages, &mut endpoint)
+}
+
+fn dispatch_event(
+    event_type: &str,
+    data: &str,
+    base_url: &str,
+    messages: &mpsc::UnboundedSender<ServerJsonRpcMessage>,
+    endpoint: &mut Option<tokio::sync::oneshot::Sender<String>>,
+) -> std::io::Result<()> {
+    match event_type {
+        "endpoint" => {
+            if let Some(sender) = endpoint.take() {
+                let url = reqwest::Url::parse(base_url)
+                    .and_then(|base| base.join(data.trim()))
+                    .map_err(std::io::Error::other)?
+                    .to_string();
+                sender
+                    .send(url)
+                    .map_err(|_| std::io::Error::other("endpoint receiver dropped"))?;
+            }
+        }
+        "message" | "" if !data.trim().is_empty() => {
+            let message = serde_json::from_str(data).map_err(std::io::Error::other)?;
+            messages
+                .send(message)
+                .map_err(|_| std::io::Error::other("MCP message receiver dropped"))?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dispatches_endpoint_and_json_rpc_messages() {
+        let (message_tx, mut message_rx) = mpsc::unbounded_channel();
+        let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel();
+        let mut endpoint = Some(endpoint_tx);
+
+        dispatch_event(
+            "endpoint",
+            "/messages?sessionId=abc\n",
+            "http://localhost:8000/sse",
+            &message_tx,
+            &mut endpoint,
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint_rx.await.unwrap(),
+            "http://localhost:8000/messages?sessionId=abc"
+        );
+
+        let payload = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"test","version":"1.0"}}}"#;
+        dispatch_event(
+            "message",
+            payload,
+            "http://localhost:8000/sse",
+            &message_tx,
+            &mut endpoint,
+        )
+        .unwrap();
+        assert!(matches!(
+            message_rx.recv().await,
+            Some(ServerJsonRpcMessage::Response(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn joins_absolute_message_endpoint_urls() {
+        let (message_tx, _) = mpsc::unbounded_channel();
+        let (endpoint_tx, endpoint_rx) = tokio::sync::oneshot::channel();
+        let mut endpoint = Some(endpoint_tx);
+        dispatch_event(
+            "endpoint",
+            "https://mcp.example.com/messages",
+            "http://localhost:8000/sse",
+            &message_tx,
+            &mut endpoint,
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint_rx.await.unwrap(),
+            "https://mcp.example.com/messages"
+        );
     }
 }

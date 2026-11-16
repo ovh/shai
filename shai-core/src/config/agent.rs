@@ -1,10 +1,11 @@
 use super::config::ShaiConfig;
-use crate::tools::mcp::McpConfig;
+use crate::tools::mcp::{mcp_config::McpCredentialStore, McpConfig};
 use crate::tools::BashToolConfig;
 use json_comments::StripComments;
 use serde::{Deserialize, Serialize};
 use shai_llm::ToolCallMethod;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,7 +311,20 @@ impl AgentConfig {
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = Self::agent_config_path(&self.name)?;
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&config_path, content)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            options.mode(0o600);
+        }
+        let mut file = options.open(&config_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(content.as_bytes())?;
         Ok(())
     }
 
@@ -355,17 +369,20 @@ impl AgentConfig {
         let config_path = Self::agent_config_path(agent_name)?;
         let legacy_path = Self::legacy_agent_config_path(agent_name)?;
 
-        if config_path.exists() {
+        let config_exists = config_path.exists();
+        let legacy_exists = legacy_path.exists();
+        if config_exists {
             std::fs::remove_file(config_path)?;
-            return Ok(());
         }
-
-        if legacy_path.exists() {
+        if legacy_exists {
             std::fs::remove_file(legacy_path)?;
-            return Ok(());
         }
-
-        Err(format!("Agent config '{}' does not exist", agent_name).into())
+        if !config_exists && !legacy_exists {
+            return Err(format!("Agent config '{}' does not exist", agent_name).into());
+        }
+        McpCredentialStore::delete_agent(agent_name)
+            .map_err(|error| format!("Failed to delete MCP credentials: {error}"))?;
+        Ok(())
     }
 
     /// Check if a builtin tool is enabled

@@ -1,22 +1,28 @@
 use async_trait::async_trait;
 use rmcp::{
-    model::{
-        CallToolRequestParam, ClientCapabilities, ClientInfo, Implementation,
-        InitializeRequestParam,
+    model::ClientConfig,
+    service::{ClientInitializeError, RunningService, ServiceExt},
+    transport::{
+        auth::{AuthClient, AuthorizationManager},
+        streamable_http_client::StreamableHttpClientTransportConfig,
+        StreamableHttpClientTransport,
     },
-    service::{RunningService, ServiceExt},
-    transport::StreamableHttpClientTransport,
     RoleClient,
 };
-use std::borrow::Cow;
 
-use super::mcp::{McpClient, McpToolDescription};
+use super::{
+    mcp::{call_tool_params, content_to_string, McpClient, McpToolDescription},
+    mcp_config::{McpCredentialStore, OAuthToken},
+    mcp_oauth::{authorize, default_browser_opener, BrowserOpener},
+};
 use crate::tools::{ToolCall, ToolResult};
 
 pub struct HttpClient {
     url: String,
-    bearer_token: Option<String>,
-    service: Option<RunningService<RoleClient, InitializeRequestParam>>,
+    legacy_token: Option<OAuthToken>,
+    credential_store: McpCredentialStore,
+    open_browser: BrowserOpener,
+    service: Option<RunningService<RoleClient, ClientConfig>>,
 }
 
 impl HttpClient {
@@ -25,58 +31,109 @@ impl HttpClient {
     }
 
     pub fn new_with_auth(url: String, bearer_token: Option<String>) -> Self {
+        let legacy_token = bearer_token.map(|access_token| OAuthToken {
+            access_token,
+            expires_at: None,
+        });
+        Self::with_credential_store(url, legacy_token, McpCredentialStore::in_memory())
+    }
+
+    pub(crate) fn with_credential_store(
+        url: String,
+        legacy_token: Option<OAuthToken>,
+        credential_store: McpCredentialStore,
+    ) -> Self {
         Self {
             url,
-            bearer_token,
+            legacy_token,
+            credential_store,
+            open_browser: default_browser_opener(),
             service: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_browser_opener<F>(mut self, opener: F) -> Self
+    where
+        F: Fn(&str) + Send + Sync + 'static,
+    {
+        self.open_browser = Arc::new(opener);
+        self
+    }
+
+    async fn manager(&self) -> Result<AuthorizationManager, rmcp::transport::auth::AuthError> {
+        let mut manager = AuthorizationManager::new(self.url.clone()).await?;
+        manager.set_credential_store(self.credential_store.clone());
+        Ok(manager)
+    }
+
+    async fn connect_authorized(
+        &mut self,
+        manager: AuthorizationManager,
+    ) -> Result<(), Box<ClientInitializeError>> {
+        let client = AuthClient::new(reqwest::Client::new(), manager);
+        let transport = StreamableHttpClientTransport::with_client(
+            client,
+            StreamableHttpClientTransportConfig::with_uri(self.url.as_str()),
+        );
+        let service = ClientConfig::default()
+            .serve(transport)
+            .await
+            .map_err(Box::new)?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.service = Some(service);
+        Ok(())
+    }
+
+    async fn connect_legacy(&mut self) -> Result<(), Box<ClientInitializeError>> {
+        let mut config = StreamableHttpClientTransportConfig::with_uri(self.url.as_str());
+        if let Some(token) = self
+            .legacy_token
+            .as_ref()
+            .filter(|token| !token.is_expired())
+        {
+            config = config.auth_header(token.access_token.as_str());
+        }
+        let transport = StreamableHttpClientTransport::from_config(config);
+        let service = ClientConfig::default()
+            .serve(transport)
+            .await
+            .map_err(Box::new)?;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.service = Some(service);
+        Ok(())
     }
 }
 
 #[async_trait]
 impl McpClient for HttpClient {
     async fn connect(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Only connect if not already connected
         if self.service.is_some() {
             return Ok(());
         }
 
-        let transport = if let Some(token) = &self.bearer_token {
-            // Create a custom reqwest client with default bearer token
-            let mut default_headers = reqwest::header::HeaderMap::new();
-            default_headers.insert(
-                reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))?,
-            );
-            let client = reqwest::Client::builder()
-                .default_headers(default_headers)
-                .build()?;
-
-            StreamableHttpClientTransport::with_client(
-                client,
-                rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig {
-                    uri: self.url.clone().into(),
-                    ..Default::default()
-                },
-            )
+        let mut manager = self.manager().await?;
+        let challenge = if manager.initialize_from_store().await? {
+            match self.connect_authorized(manager).await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.is_authorization_required() => {
+                    error.auth_challenge().map(str::to_owned)
+                }
+                Err(error) => return Err(error.into()),
+            }
         } else {
-            StreamableHttpClientTransport::from_uri(self.url.as_str())
+            match self.connect_legacy().await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.is_authorization_required() => {
+                    error.auth_challenge().map(str::to_owned)
+                }
+                Err(error) => return Err(error.into()),
+            }
         };
 
-        let client_info = ClientInfo {
-            protocol_version: Default::default(),
-            capabilities: ClientCapabilities::default(),
-            client_info: Implementation {
-                name: "shai-mcp-http-client".to_string(),
-                version: "0.1.0".to_string(),
-            },
-        };
-        let service = client_info.serve(transport).await?;
-
-        // Give the server a moment to process the initialization
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        self.service = Some(service);
+        let manager = self.manager().await?;
+        let manager = authorize(manager, challenge, self.open_browser.clone()).await?;
+        self.connect_authorized(manager).await?;
         Ok(())
     }
 
@@ -112,29 +169,11 @@ impl McpClient for HttpClient {
     ) -> Result<ToolResult, Box<dyn std::error::Error + Send + Sync>> {
         let service = self.service.as_ref().ok_or("Not connected")?;
 
-        let result = service
-            .call_tool(CallToolRequestParam {
-                name: Cow::Owned(tool_call.tool_name.clone()),
-                arguments: tool_call.parameters.as_object().cloned(),
-            })
-            .await?;
+        let result = service.call_tool(call_tool_params(&tool_call)).await?;
 
-        let content = result
-            .content
-            .into_iter()
-            .map(|c| match c.raw {
-                rmcp::model::RawContent::Text(text_content) => text_content.text,
-                rmcp::model::RawContent::Image(image_data) => {
-                    format!("[Image: {} bytes]", image_data.data.len())
-                }
-                rmcp::model::RawContent::Resource(_) => "[Resource]".to_string(),
-                rmcp::model::RawContent::Audio(audio_data) => {
-                    format!("[Audio: {} bytes]", audio_data.data.len())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        Ok(ToolResult::success(content))
+        Ok(ToolResult::success(content_to_string(result.content)))
     }
 }
+
+#[cfg(test)]
+use std::sync::Arc;

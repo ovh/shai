@@ -59,6 +59,10 @@ pub(crate) mod test_helpers {
 
     /// Get the default model for a provider, with fallbacks
     pub async fn get_test_model_for_provider(client: &LlmClient) -> String {
+        if client.provider_name() == "ovhcloud" {
+            return "gpt-oss-20b".to_string();
+        }
+
         client
             .default_model()
             .await

@@ -4,128 +4,61 @@ on:
   push:
     branches: [main]
 
+permissions: {}
+
+# One publish at a time: a newer push waits instead of racing on the
+# delete/create below (and is never cancelled mid-publish).
+concurrency:
+  group: unstable-release
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: Build Unstable for ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            binary_name: shai
-            asset_name: shai-unstable-linux-x86_64
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            binary_name: shai
-            asset_name: shai-unstable-linux-aarch64
-          #- os: windows-latest
-          #  target: x86_64-pc-windows-msvc
-          #  binary_name: shai.exe
-          #  asset_name: shai-unstable-windows-x86_64.exe
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            binary_name: shai
-            asset_name: shai-unstable-macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary_name: shai
-            asset_name: shai-unstable-macos-aarch64
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential musl-tools
-
-      - name: Add musl target (Linux)
-        if: endsWith(matrix.target, '-linux-musl')
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-registry-
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-index-
-
-      - name: Cache target directory
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.target }}-target-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-target-
-
-      - name: Build binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Prepare binary (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.asset_name }}
-          strip ${{ matrix.asset_name }}
-
-      - name: Prepare binary (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.asset_name }}
-
-      - name: Upload unstable artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.asset_name }}
-          path: ${{ matrix.asset_name }}
-          retention-days: 30
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      asset-prefix: shai-unstable
+      retention-days: 30
 
   create-unstable-release:
+    name: Publish unstable release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write     # create the release and its tag
+      id-token: write     # sign the provenance attestation
+      attestations: write # store the provenance attestation
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Get current date
-        id: date
-        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
-
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: shai-unstable-*
+          path: dist
+          merge-multiple: true
 
-      - name: Delete existing unstable release
-        continue-on-error: true
-        run: |
-          gh release delete unstable --yes
+      - name: Compute checksums
+        working-directory: dist
+        run: sha256sum shai-unstable-* > SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/shai-unstable-*
+
+      - name: Publish unstable release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create unstable release
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         run: |
-          gh release create unstable \
-            --title "Unstable Build (${{ steps.date.outputs.date }})" \
-            --notes "Automated unstable build from commit ${{ github.sha }}" \
+          # Remove the release AND its tag, or the new release reuses the old
+          # tag and keeps pointing at the first commit ever published.
+          gh release delete unstable --yes --cleanup-tag || true
+          gh api -X DELETE "repos/$GH_REPO/git/refs/tags/unstable" || true
+          gh release create unstable dist/* \
+            --target "$SHA" \
             --prerelease \
-            shai-unstable-linux-x86_64/shai-unstable-linux-x86_64 \
-            shai-unstable-linux-aarch64/shai-unstable-linux-aarch64 \
-            shai-unstable-macos-x86_64/shai-unstable-macos-x86_64 \
-            shai-unstable-macos-aarch64/shai-unstable-macos-aarch64
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            --title "Unstable Build ($(date -u +%Y-%m-%d))" \
+            --notes "Automated unstable build from commit $SHA"

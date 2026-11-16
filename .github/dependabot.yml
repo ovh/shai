@@ -1,0 +1,13 @@
+# Goes to .github/dependabot.yml: keeps the SHA-pinned actions up to date
+# (Dependabot rewrites both the SHA and the "# vX.Y.Z" comment).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7   # don't adopt a release in its first week (supply-chain compromises)
+    groups:
+      github-actions:
+        patterns: ["*"]

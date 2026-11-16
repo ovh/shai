@@ -1,0 +1,95 @@
+# Reusable build, called by ci.yml, unstable.yml and release.yml so the three
+# workflows build the same targets the same way.
+# Holds no write permission: publishing is done by the caller in a separate job.
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      asset-prefix:
+        description: Binary name prefix (shai or shai-unstable)
+        type: string
+        default: shai
+      use-cache:
+        description: Use the cargo cache. Keep false in workflows that publish (cache poisoning).
+        type: boolean
+        default: false
+      retention-days:
+        description: Artifact retention
+        type: number
+        default: 10
+
+permissions: {}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            platform: linux-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+    env:
+      TARGET: ${{ matrix.target }}
+      ASSET: ${{ inputs.asset-prefix }}-${{ matrix.platform }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential musl-tools
+
+      - name: Cache cargo
+        if: inputs.use-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build binary
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Prepare binary
+        run: |
+          cp "target/$TARGET/release/shai" "$ASSET"
+          strip "$ASSET"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention-days }}
