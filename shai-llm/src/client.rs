@@ -185,6 +185,19 @@ impl LlmClient {
         ]
     }
 
+    /// Read a process environment variable.
+    ///
+    /// Tests can shadow the process environment for the current thread, so the
+    /// fallback can be exercised without touching the real, process-wide
+    /// variables that other tests read.
+    fn process_env(key: &str) -> Option<String> {
+        #[cfg(test)]
+        if let Some(fake) = test_env::get() {
+            return fake.get(key).cloned();
+        }
+        std::env::var(key).ok()
+    }
+
     /// Helper function to get a value from config or fall back to environment variable
     fn get_or_env(
         env_values: &std::collections::HashMap<String, String>,
@@ -193,7 +206,7 @@ impl LlmClient {
         env_values
             .get(key)
             .cloned()
-            .or_else(|| std::env::var(key).ok())
+            .or_else(|| Self::process_env(key))
     }
 
     /// Create a provider dynamically based on name and environment values
@@ -202,47 +215,229 @@ impl LlmClient {
         provider_name: &str,
         env_values: &std::collections::HashMap<String, String>,
     ) -> Result<Self, LlmError> {
+        ProviderSettings::resolve(provider_name, SettingsSource::ConfigOrEnv, &|key| {
+            Self::get_or_env(env_values, key)
+        })
+        .map(ProviderSettings::into_client)
+    }
+
+    /// Create a provider from `env_values` alone.
+    ///
+    /// Unlike [`LlmClient::create_provider`], a setting missing from
+    /// `env_values` is never looked up in the process environment. Use this for
+    /// any client other than the session's primary one: the primary provider's
+    /// key and base URL are exported to the process environment, and the
+    /// fallback would hand them to a client that talks to another endpoint.
+    ///
+    /// Blank values count as missing. Two more rules apply, because such a
+    /// client must only talk to an endpoint its own entry stands for:
+    /// anonymous OVHcloud access is not accepted (a keyless `ovhcloud` entry
+    /// is an error), and an `ollama` entry must carry its base URL instead of
+    /// getting the built-in localhost default.
+    ///
+    /// The returned client is not tied to a model. Do not ask it for one with
+    /// [`LlmClient::default_model`], which answers with the primary model:
+    /// always send the model name the caller was configured with.
+    ///
+    /// No network I/O is performed.
+    pub fn create_provider_isolated(
+        provider_name: &str,
+        env_values: &std::collections::HashMap<String, String>,
+    ) -> Result<Self, LlmError> {
+        Self::isolated_settings(provider_name, env_values).map(|settings| settings.0.into_client())
+    }
+
+    /// The settings [`LlmClient::create_provider_isolated`] would build a
+    /// client from, or the reason it cannot build one.
+    ///
+    /// Two sets of `env_values` that yield equal settings yield equivalent
+    /// clients, whatever else they contain. Nothing is built and no network
+    /// I/O is performed.
+    pub fn isolated_settings(
+        provider_name: &str,
+        env_values: &std::collections::HashMap<String, String>,
+    ) -> Result<IsolatedSettings, LlmError> {
+        ProviderSettings::resolve(provider_name, SettingsSource::ConfigOnly, &|key| {
+            env_values
+                .get(key)
+                .filter(|value| !value.trim().is_empty())
+                .cloned()
+        })
+        .map(IsolatedSettings)
+    }
+}
+
+/// Everything a client for one provider is built from, once each setting has
+/// been looked up. Keeping this apart from the client itself makes the
+/// outcome of the lookup something that can be compared and tested.
+///
+/// It holds credentials, so it only has a `Debug` form in test builds.
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+enum ProviderSettings {
+    OpenAi {
+        api_key: String,
+    },
+    Anthropic {
+        api_key: String,
+    },
+    Ollama {
+        base_url: String,
+        api_key: Option<String>,
+    },
+    Mistral {
+        api_key: String,
+    },
+    OvhCloud {
+        api_key: String,
+        base_url: Option<String>,
+    },
+    OpenRouter {
+        api_key: String,
+    },
+    OpenAiCompatible {
+        api_key: String,
+        base_url: String,
+    },
+}
+
+impl ProviderSettings {
+    fn resolve(
+        provider_name: &str,
+        source: SettingsSource,
+        lookup: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Self, LlmError> {
+        let required = |key: &str| -> Result<String, LlmError> {
+            lookup(key).ok_or_else(|| format!("{} not found in {}", key, source.describe()).into())
+        };
+
         match provider_name {
-            "openai" => {
-                let api_key = Self::get_or_env(env_values, "OPENAI_API_KEY")
-                    .ok_or("OPENAI_API_KEY not found in config or environment")?;
-                Ok(Self::openai(api_key))
-            }
-            "anthropic" => {
-                let api_key = Self::get_or_env(env_values, "ANTHROPIC_API_KEY")
-                    .ok_or("ANTHROPIC_API_KEY not found in config or environment")?;
-                Ok(Self::anthropic(api_key))
-            }
+            "openai" => Ok(Self::OpenAi {
+                api_key: required("OPENAI_API_KEY")?,
+            }),
+            "anthropic" => Ok(Self::Anthropic {
+                api_key: required("ANTHROPIC_API_KEY")?,
+            }),
             "ollama" => {
-                let base_url = Self::get_or_env(env_values, "OLLAMA_BASE_URL")
-                    .unwrap_or_else(|| "http://localhost:11434/v1".to_string());
-                let api_key = Self::get_or_env(env_values, "OLLAMA_API_KEY");
-                Ok(Self::ollama_with_key(base_url, api_key))
+                let base_url = match source {
+                    SettingsSource::ConfigOrEnv => lookup("OLLAMA_BASE_URL")
+                        .unwrap_or_else(|| "http://localhost:11434/v1".to_string()),
+                    // The entry has to say where it points: the built-in
+                    // default is not an endpoint its owner chose for it.
+                    SettingsSource::ConfigOnly => required("OLLAMA_BASE_URL")?,
+                };
+                Ok(Self::Ollama {
+                    base_url,
+                    api_key: lookup("OLLAMA_API_KEY"),
+                })
             }
-            "mistral" => {
-                let api_key = Self::get_or_env(env_values, "MISTRAL_API_KEY")
-                    .ok_or("MISTRAL_API_KEY not found in config or environment")?;
-                Ok(Self::mistral(api_key))
-            }
+            "mistral" => Ok(Self::Mistral {
+                api_key: required("MISTRAL_API_KEY")?,
+            }),
             "ovhcloud" => {
-                let api_key = Self::get_or_env(env_values, "OVH_API_KEY").unwrap_or_default();
-                let base_url = Self::get_or_env(env_values, "OVH_BASE_URL");
-                Ok(Self::ovhcloud(api_key, base_url))
+                let api_key = match source {
+                    // The primary model may run on OVHcloud's anonymous tier.
+                    SettingsSource::ConfigOrEnv => lookup("OVH_API_KEY").unwrap_or_default(),
+                    SettingsSource::ConfigOnly => required("OVH_API_KEY")?,
+                };
+                Ok(Self::OvhCloud {
+                    api_key,
+                    base_url: lookup("OVH_BASE_URL"),
+                })
             }
-            "openrouter" => {
-                let api_key = Self::get_or_env(env_values, "OPENROUTER_API_KEY")
-                    .ok_or("OPENROUTER_API_KEY not found in config or environment")?;
-                Ok(Self::openrouter(api_key))
-            }
-            "openai_compatible" => {
-                let api_key = Self::get_or_env(env_values, "OPENAI_COMPATIBLE_API_KEY")
-                    .ok_or("OPENAI_COMPATIBLE_API_KEY not found in config or environment")?;
-                let base_url = Self::get_or_env(env_values, "OPENAI_COMPATIBLE_BASE_URL")
-                    .ok_or("OPENAI_COMPATIBLE_BASE_URL not found in config or environment")?;
-                Ok(Self::compatible(api_key, base_url))
-            }
+            "openrouter" => Ok(Self::OpenRouter {
+                api_key: required("OPENROUTER_API_KEY")?,
+            }),
+            "openai_compatible" => Ok(Self::OpenAiCompatible {
+                api_key: required("OPENAI_COMPATIBLE_API_KEY")?,
+                base_url: required("OPENAI_COMPATIBLE_BASE_URL")?,
+            }),
             _ => Err(format!("Unknown provider: {}", provider_name).into()),
         }
+    }
+
+    fn into_client(self) -> LlmClient {
+        match self {
+            Self::OpenAi { api_key } => LlmClient::openai(api_key),
+            Self::Anthropic { api_key } => LlmClient::anthropic(api_key),
+            Self::Ollama { base_url, api_key } => LlmClient::ollama_with_key(base_url, api_key),
+            Self::Mistral { api_key } => LlmClient::mistral(api_key),
+            Self::OvhCloud { api_key, base_url } => LlmClient::ovhcloud(api_key, base_url),
+            Self::OpenRouter { api_key } => LlmClient::openrouter(api_key),
+            Self::OpenAiCompatible { api_key, base_url } => {
+                LlmClient::compatible(api_key, base_url)
+            }
+        }
+    }
+
+    fn provider_name(&self) -> &'static str {
+        match self {
+            Self::OpenAi { .. } => "openai",
+            Self::Anthropic { .. } => "anthropic",
+            Self::Ollama { .. } => "ollama",
+            Self::Mistral { .. } => "mistral",
+            Self::OvhCloud { .. } => "ovhcloud",
+            Self::OpenRouter { .. } => "openrouter",
+            Self::OpenAiCompatible { .. } => "openai_compatible",
+        }
+    }
+}
+
+/// The settings an isolated client is built from.
+///
+/// Opaque on purpose. It can be compared, and it prints which provider it is
+/// for but none of its values, which include credentials.
+#[derive(Clone, PartialEq, Eq)]
+pub struct IsolatedSettings(ProviderSettings);
+
+impl std::fmt::Debug for IsolatedSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IsolatedSettings({})", self.0.provider_name())
+    }
+}
+
+/// Where [`ProviderSettings::resolve`] may read provider settings from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsSource {
+    /// The provider's config entry, then the process environment.
+    ConfigOrEnv,
+    /// The provider's config entry only.
+    ConfigOnly,
+}
+
+impl SettingsSource {
+    fn describe(self) -> &'static str {
+        match self {
+            SettingsSource::ConfigOrEnv => "config or environment",
+            SettingsSource::ConfigOnly => "the provider's config entry",
+        }
+    }
+}
+
+/// Per-thread stand-in for the process environment, for tests.
+#[cfg(test)]
+mod test_env {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    thread_local! {
+        static FAKE_ENV: RefCell<Option<HashMap<String, String>>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn get() -> Option<HashMap<String, String>> {
+        FAKE_ENV.with(|fake| fake.borrow().clone())
+    }
+
+    /// Run `f` with `vars` as the whole environment seen by this thread.
+    pub(super) fn with<T>(vars: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+        let vars = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        FAKE_ENV.with(|fake| *fake.borrow_mut() = Some(vars));
+        let result = f();
+        FAKE_ENV.with(|fake| *fake.borrow_mut() = None);
+        result
     }
 }
 
@@ -818,5 +1013,333 @@ mod retry_logic {
         assert!(!LlmClient::is_retryable_error(&auth));
         let server = boxed(ChatError::Api(APIError::ServerError("boom".into())));
         assert!(LlmClient::is_retryable_error(&server));
+    }
+}
+
+#[cfg(test)]
+mod provider_settings_tests {
+    use super::{test_env, LlmClient, ProviderSettings};
+    use std::collections::HashMap;
+
+    /// Every key a provider reads, each with a value, as the process
+    /// environment would hold them once a primary provider has exported them.
+    const FULL_ENV: &[(&str, &str)] = &[
+        ("OPENAI_API_KEY", "env-openai"),
+        ("ANTHROPIC_API_KEY", "env-anthropic"),
+        ("MISTRAL_API_KEY", "env-mistral"),
+        ("OPENROUTER_API_KEY", "env-openrouter"),
+        ("OPENAI_COMPATIBLE_API_KEY", "env-compatible"),
+        ("OPENAI_COMPATIBLE_BASE_URL", "http://env.invalid/v1"),
+        ("OVH_API_KEY", "env-ovh"),
+        ("OVH_BASE_URL", "http://env.invalid/v1"),
+        ("OLLAMA_API_KEY", "env-ollama"),
+        ("OLLAMA_BASE_URL", "http://env.invalid/v1"),
+    ];
+
+    const ALL_PROVIDERS: &[&str] = &[
+        "openai",
+        "anthropic",
+        "mistral",
+        "openrouter",
+        "openai_compatible",
+        "ovhcloud",
+        "ollama",
+    ];
+
+    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn isolated(provider: &str, entry: &[(&str, &str)]) -> Result<ProviderSettings, String> {
+        LlmClient::isolated_settings(provider, &vars(entry))
+            .map(|settings| settings.0)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn create_provider_falls_back_to_the_environment() {
+        // Baseline for the tests below: the per-thread environment is what the
+        // fallback sees, so an isolated client ignoring it is a real result.
+        test_env::with(FULL_ENV, || {
+            for provider in ALL_PROVIDERS {
+                assert!(
+                    LlmClient::create_provider(provider, &HashMap::new()).is_ok(),
+                    "{provider} should be built from the environment"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn isolated_provider_never_completes_an_entry_from_the_environment() {
+        test_env::with(FULL_ENV, || {
+            for provider in ALL_PROVIDERS {
+                let error = isolated(provider, &[])
+                    .expect_err("an empty entry must not be completed from the environment");
+                assert!(
+                    error.contains("not found in the provider's config entry"),
+                    "{provider}: {error}"
+                );
+                assert!(!error.contains("env-"), "{provider}: {error}");
+                assert!(LlmClient::create_provider_isolated(provider, &HashMap::new()).is_err());
+            }
+        });
+    }
+
+    #[test]
+    fn isolated_settings_are_exactly_what_the_entry_holds() {
+        // With every variable present in the environment, the settings must
+        // still be the entry's own: required keys, optional keys and base URLs.
+        test_env::with(FULL_ENV, || {
+            use ProviderSettings::*;
+            let key = "entry-key".to_string();
+            let url = "http://127.0.0.1:9/v1".to_string();
+
+            assert_eq!(
+                isolated("openai", &[("OPENAI_API_KEY", "entry-key")]),
+                Ok(OpenAi {
+                    api_key: key.clone()
+                })
+            );
+            assert_eq!(
+                isolated("anthropic", &[("ANTHROPIC_API_KEY", "entry-key")]),
+                Ok(Anthropic {
+                    api_key: key.clone()
+                })
+            );
+            assert_eq!(
+                isolated("mistral", &[("MISTRAL_API_KEY", "entry-key")]),
+                Ok(Mistral {
+                    api_key: key.clone()
+                })
+            );
+            assert_eq!(
+                isolated("openrouter", &[("OPENROUTER_API_KEY", "entry-key")]),
+                Ok(OpenRouter {
+                    api_key: key.clone()
+                })
+            );
+            assert_eq!(
+                isolated(
+                    "openai_compatible",
+                    &[
+                        ("OPENAI_COMPATIBLE_API_KEY", "entry-key"),
+                        ("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1"),
+                    ]
+                ),
+                Ok(OpenAiCompatible {
+                    api_key: key.clone(),
+                    base_url: url.clone()
+                })
+            );
+            // No base URL in the entry: the provider's own endpoint, not the
+            // one the environment names.
+            assert_eq!(
+                isolated("ovhcloud", &[("OVH_API_KEY", "entry-key")]),
+                Ok(OvhCloud {
+                    api_key: key.clone(),
+                    base_url: None
+                })
+            );
+            // No key in the entry: none is sent, not the environment's.
+            assert_eq!(
+                isolated("ollama", &[("OLLAMA_BASE_URL", "http://127.0.0.1:9/v1")]),
+                Ok(Ollama {
+                    base_url: url.clone(),
+                    api_key: None
+                })
+            );
+            assert_eq!(
+                isolated(
+                    "ollama",
+                    &[
+                        ("OLLAMA_BASE_URL", "http://127.0.0.1:9/v1"),
+                        ("OLLAMA_API_KEY", "entry-key"),
+                    ]
+                ),
+                Ok(Ollama {
+                    base_url: url,
+                    api_key: Some(key)
+                })
+            );
+        });
+    }
+
+    #[test]
+    fn isolated_clients_are_built_for_complete_entries() {
+        test_env::with(&[], || {
+            let entries: &[(&str, &[(&str, &str)])] = &[
+                ("openai", &[("OPENAI_API_KEY", "k")]),
+                ("anthropic", &[("ANTHROPIC_API_KEY", "k")]),
+                ("mistral", &[("MISTRAL_API_KEY", "k")]),
+                ("openrouter", &[("OPENROUTER_API_KEY", "k")]),
+                (
+                    "openai_compatible",
+                    &[
+                        ("OPENAI_COMPATIBLE_API_KEY", "k"),
+                        ("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1"),
+                    ],
+                ),
+                ("ovhcloud", &[("OVH_API_KEY", "k")]),
+                ("ollama", &[("OLLAMA_BASE_URL", "http://127.0.0.1:9/v1")]),
+            ];
+            for (provider, entry) in entries {
+                let client = LlmClient::create_provider_isolated(provider, &vars(entry))
+                    .unwrap_or_else(|e| panic!("{provider}: {e}"));
+                assert_eq!(client.provider_name(), *provider);
+            }
+        });
+    }
+
+    #[test]
+    fn isolated_provider_treats_blank_values_as_missing() {
+        test_env::with(FULL_ENV, || {
+            for blank in ["", "   "] {
+                assert!(isolated("openai", &[("OPENAI_API_KEY", blank)]).is_err());
+                assert!(isolated("ollama", &[("OLLAMA_BASE_URL", blank)]).is_err());
+            }
+            // One of two required settings is not enough.
+            let error =
+                isolated("openai_compatible", &[("OPENAI_COMPATIBLE_API_KEY", "k")]).unwrap_err();
+            assert!(error.contains("OPENAI_COMPATIBLE_BASE_URL"), "{error}");
+            // A blank optional setting is the same as none.
+            assert_eq!(
+                isolated(
+                    "ollama",
+                    &[
+                        ("OLLAMA_BASE_URL", "http://127.0.0.1:9/v1"),
+                        ("OLLAMA_API_KEY", " ")
+                    ]
+                ),
+                isolated("ollama", &[("OLLAMA_BASE_URL", "http://127.0.0.1:9/v1")])
+            );
+        });
+    }
+
+    #[test]
+    fn isolated_provider_refuses_anonymous_ovhcloud() {
+        test_env::with(&[], || {
+            let entry = vars(&[("OVH_BASE_URL", "http://127.0.0.1:9/v1")]);
+            // The primary model may be anonymous...
+            assert!(LlmClient::create_provider("ovhcloud", &entry).is_ok());
+            // ...a secondary one may not.
+            let error = LlmClient::create_provider_isolated("ovhcloud", &entry)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("OVH_API_KEY"), "{error}");
+        });
+    }
+
+    #[test]
+    fn isolated_ollama_needs_an_explicit_base_url() {
+        // The shell names a remote endpoint; the entries do not name any.
+        let env = &[("OLLAMA_BASE_URL", "https://remote.invalid/v1")];
+        test_env::with(env, || {
+            for entry in [vars(&[]), vars(&[("OLLAMA_API_KEY", "k")])] {
+                // The primary path completes the entry from the environment,
+                // or from the localhost default...
+                assert!(LlmClient::create_provider("ollama", &entry).is_ok());
+                // ...the isolated path does neither: nothing in the entry
+                // says where the conversation, or the key, should go.
+                let error = LlmClient::create_provider_isolated("ollama", &entry)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("OLLAMA_BASE_URL"), "{error}");
+            }
+        });
+    }
+
+    #[test]
+    fn isolated_settings_compare_by_what_the_client_is_built_from() {
+        test_env::with(FULL_ENV, || {
+            let base = vars(&[
+                ("OPENAI_COMPATIBLE_API_KEY", "k"),
+                ("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:9/v1"),
+            ]);
+            let settings = LlmClient::isolated_settings("openai_compatible", &base).unwrap();
+
+            // Settings the provider does not read, and blank ones, do not count.
+            let mut noisy = base.clone();
+            noisy.insert("OPENAI_API_KEY".to_string(), "other".to_string());
+            noisy.insert("UNRELATED".to_string(), "x".to_string());
+            noisy.insert("OLLAMA_API_KEY".to_string(), String::new());
+            assert_eq!(
+                LlmClient::isolated_settings("openai_compatible", &noisy).unwrap(),
+                settings
+            );
+
+            // A different key or host does.
+            for (name, value) in [
+                ("OPENAI_COMPATIBLE_API_KEY", "k2"),
+                ("OPENAI_COMPATIBLE_BASE_URL", "http://127.0.0.1:10/v1"),
+            ] {
+                let mut other = base.clone();
+                other.insert(name.to_string(), value.to_string());
+                assert_ne!(
+                    LlmClient::isolated_settings("openai_compatible", &other).unwrap(),
+                    settings
+                );
+            }
+
+            // The provider is printable, the values are not.
+            assert_eq!(
+                format!("{settings:?}"),
+                "IsolatedSettings(openai_compatible)"
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_provider_is_an_error_in_both_modes() {
+        test_env::with(FULL_ENV, || {
+            assert!(LlmClient::create_provider("nope", &HashMap::new()).is_err());
+            assert!(LlmClient::create_provider_isolated("nope", &HashMap::new()).is_err());
+            assert!(LlmClient::isolated_settings("nope", &HashMap::new()).is_err());
+        });
+    }
+
+    /// The leak this constructor exists to prevent: the primary provider's key
+    /// sits in the environment, and a second entry for the same provider type
+    /// points at another host without a key of its own.
+    #[tokio::test]
+    async fn isolated_ollama_does_not_send_the_environment_key_to_its_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let entry = vars(&[("OLLAMA_BASE_URL", &format!("{}/v1", server.url()))]);
+        let env = &[("OLLAMA_API_KEY", "env-ollama")];
+
+        let leaked = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer env-ollama")
+            .with_status(200)
+            .with_body(r#"{"object":"list","data":[{"id":"m"}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        // The fallback constructor does send it, so the mock can catch a leak.
+        let fallback = test_env::with(env, || LlmClient::create_provider("ollama", &entry))
+            .expect("fallback client");
+        fallback.models().await.expect("models");
+        leaked.assert_async().await;
+        leaked.remove_async().await;
+
+        let anonymous = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_body(r#"{"object":"list","data":[{"id":"m"}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let isolated = test_env::with(env, || {
+            LlmClient::create_provider_isolated("ollama", &entry)
+        })
+        .expect("isolated client");
+        isolated.models().await.expect("models");
+        anonymous.assert_async().await;
     }
 }
