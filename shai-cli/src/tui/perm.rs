@@ -128,12 +128,14 @@ impl PermissionWidget<'_> {
             .unwrap_or(0)
     }
 
-    /// Largest horizontal offset that still fills the preview pane.
+    /// Largest horizontal offset that still fills the preview pane, capped at what
+    /// `Paragraph::scroll` can take (`u16`) so the offset never wraps around.
     fn max_h_scroll(&self) -> usize {
-        match self.preview_width.get() as usize {
+        let max = match self.preview_width.get() as usize {
             0 => self.max_line_width().saturating_sub(1),
             width => self.max_line_width().saturating_sub(width),
-        }
+        };
+        max.min(u16::MAX as usize)
     }
 
     pub fn get_selected(&self) -> PermissionResponse {
@@ -430,6 +432,19 @@ mod tests {
             screen.contains("56789abcdefghiZ▲"),
             "last character sits just left of the scrollbar: {screen:?}"
         );
+    }
+
+    #[test]
+    fn horizontal_offset_is_capped_at_u16_max() {
+        // Past u16::MAX the offset used to wrap and jump back near the start.
+        let line = format!("{}MARK{}", "a".repeat(65_535), "b".repeat(10_000));
+        let mut widget = make_widget(&line);
+        render(&widget);
+        widget.h_scroll_offset = 1_000_000;
+        press(&mut widget, KeyCode::Right);
+        assert_eq!(widget.h_scroll_offset, u16::MAX as usize);
+        let screen = render(&widget);
+        assert!(screen.contains("MARKbbbb"), "{screen:?}");
     }
 
     #[test]
