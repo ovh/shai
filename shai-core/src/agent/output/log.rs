@@ -86,6 +86,9 @@ impl FileEventLogger {
             AgentEvent::TodoUpdated { todos } => {
                 format!("TodoUpdated: {} item(s)", todos.len())
             }
+            AgentEvent::ModelSwitched { provider, model } => {
+                format!("ModelSwitched: {}/{}", provider, model)
+            }
         };
 
         let log_line = format!(

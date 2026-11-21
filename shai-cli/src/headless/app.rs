@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::headless::tools::ToolConfig;
+use crate::session_options::SessionOptions;
 
 use super::tools::{list_all_tools, parse_tools_list, ToolName};
 use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
@@ -22,6 +23,7 @@ pub enum AgentKind {
 pub struct AppHeadless {
     kind: AgentKind,
     temperature: Option<f32>,
+    session_options: SessionOptions,
 }
 
 impl AppHeadless {
@@ -29,7 +31,12 @@ impl AppHeadless {
         Self {
             kind: AgentKind::Coder,
             temperature: None,
+            session_options: SessionOptions::default(),
         }
+    }
+
+    pub fn set_session_options(&mut self, session_options: SessionOptions) {
+        self.session_options = session_options;
     }
 
     pub fn set_temperature(&mut self, temperature: f32) {
@@ -61,7 +68,7 @@ impl AppHeadless {
             return Ok(());
         }
 
-        let agent = if let Some(agent_name) = agent_name {
+        let mut agent = if let Some(agent_name) = agent_name {
             // Use custom agent from config
             AgentBuilder::create(Some(agent_name))
                 .await
@@ -71,7 +78,17 @@ impl AppHeadless {
                 .build()
         } else {
             // Use default agent with provided tools
-            let (llm_client, model) = ShaiConfig::get_llm().await?;
+            // One load of the config, which also builds the primary model:
+            // a file that breaks after the start-up check stops the run
+            // instead of falling back to the built-in default.
+            let config = match SessionOptions::primary_config() {
+                Ok(config) => config,
+                Err(problem) => {
+                    eprintln!("error: {}", problem);
+                    std::process::exit(2);
+                }
+            };
+            let (llm_client, model) = config.get_llm_from_config().await?;
             eprintln!(
                 "\x1b[2m░ {} on {}\x1b[0m",
                 model,
@@ -107,10 +124,8 @@ impl AppHeadless {
                     .sudo()
                     .build()
             } else {
-                // Use default agent
-                AgentBuilder::default()
-                    .await
-                    .map_err(|e| format!("Failed to create default agent: {}", e))?
+                // Use default agent, on the model built above
+                AgentBuilder::default_with_llm(Arc::new(llm_client), model)
                     .with_traces(initial_trace)
                     .sudo()
                     .build()
@@ -119,6 +134,14 @@ impl AppHeadless {
 
         if let Some(temp) = self.temperature {
             *agent.temperature.write().await = temp;
+        }
+
+        // One line on stderr when a handoff is armed, or when one was asked
+        // for and this agent cannot take it. The switch itself is announced,
+        // also in one line, by the event handler below.
+        let mut session_options = self.session_options.clone();
+        if let Some(notice) = session_options.arm(&mut agent) {
+            eprintln!("{}", shai_core::agent::output::notice_line(&notice));
         }
 
         let result = agent

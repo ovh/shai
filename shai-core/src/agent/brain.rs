@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use openai_dive::v1::resources::chat::ChatMessage;
-use shai_llm::ToolCallMethod;
+use shai_llm::{LlmClient, ToolCallMethod};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -115,4 +115,20 @@ pub trait Brain: Send + Sync {
         context: ThinkerContext,
         budget: ToolBudgetRef,
     ) -> Result<ThinkerDecision, AgentError>;
+
+    /// Continue on another model: replace the client and the model name this
+    /// brain sends its requests with, and keep everything else.
+    ///
+    /// Returns false, and changes nothing, when the brain cannot do that,
+    /// which is the default. The agent calls this between two steps, never
+    /// while `next_step` is running.
+    fn switch_model(&mut self, _llm: Arc<LlmClient>, _model: String) -> bool {
+        false
+    }
+
+    /// Whether [`Brain::switch_model`] would succeed. Asked before a handoff
+    /// is armed, so that one which could never happen is refused up front.
+    fn can_switch_model(&self) -> bool {
+        false
+    }
 }

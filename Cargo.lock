@@ -3632,6 +3632,7 @@ dependencies = [
  "futures 0.3.31",
  "json_comments",
  "libc",
+ "mockito",
  "oauth2 4.4.2",
  "openai_dive",
  "paste",

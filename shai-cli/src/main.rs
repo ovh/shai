@@ -9,6 +9,7 @@ use crossterm::{
     ExecutableCommand,
 };
 use headless::app::AppHeadless;
+use session_options::SessionOptions;
 
 use console::strip_ansi_codes;
 use futures::StreamExt;
@@ -34,6 +35,7 @@ use tui::App;
 mod fc;
 mod headless;
 mod import;
+mod session_options;
 #[cfg(unix)]
 mod shell;
 
@@ -97,6 +99,10 @@ struct Cli {
     /// Interactive mode: pipe input then show TUI with context
     #[arg(short, long)]
     interactive: bool,
+    /// Hand the session off to another model after the first edit:
+    /// a role name or <provider>/<model> (overrides prewalk.into)
+    #[arg(long, value_name = "ROLE_OR_MODEL")]
+    prewalk_into: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -187,10 +193,36 @@ enum ListTarget {
     Skills,
 }
 
+/// Whether this invocation starts an agent session, in the TUI or headless.
+fn starts_session(cli: &Cli) -> bool {
+    match &cli.command {
+        None => !cli.list_tools && !cli.version,
+        Some(Commands::Agent { name }) => name.as_deref() != Some("list"),
+        Some(Commands::Session { .. }) => true,
+        Some(_) => false,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let session_starts = starts_session(&cli);
     default_config(cli.default_shai_config_url).await;
+
+    // Session options are resolved only for the commands that start a
+    // session, so that the others (auth, list, ...) keep working when an
+    // option cannot be resolved, and before anything else those commands do,
+    // so that none of their paths runs without them. Asking for one where it
+    // cannot apply is an error.
+    let session_options = if session_starts {
+        SessionOptions::resolve_or_exit(cli.prewalk_into.as_deref())
+    } else {
+        if cli.prewalk_into.is_some() {
+            eprintln!("error: --prewalk-into only applies to commands that start an agent session");
+            std::process::exit(2);
+        }
+        SessionOptions::default()
+    };
 
     match cli.command {
         #[cfg(unix)]
@@ -213,10 +245,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 list_agents();
             }
             Some(name) => {
-                handle_main(Some(name.to_string()), None, None).await?;
+                handle_main(Some(name.to_string()), None, None, session_options.clone()).await?;
             }
             None => {
-                handle_main(None, None, Some(tui::app::InitialModal::AgentPicker)).await?;
+                handle_main(
+                    None,
+                    None,
+                    Some(tui::app::InitialModal::AgentPicker),
+                    session_options.clone(),
+                )
+                .await?;
             }
         },
         Some(Commands::Session { id }) => match id.as_deref() {
@@ -228,13 +266,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         return Ok(());
                     }
                 };
-                handle_main(None, restore_id, None).await?;
+                handle_main(None, restore_id, None, session_options.clone()).await?;
             }
             Some(id) => {
-                handle_main(None, Some(id.to_string()), None).await?;
+                handle_main(None, Some(id.to_string()), None, session_options.clone()).await?;
             }
             None => {
-                handle_main(None, None, Some(tui::app::InitialModal::SessionPicker)).await?;
+                handle_main(
+                    None,
+                    None,
+                    Some(tui::app::InitialModal::SessionPicker),
+                    session_options.clone(),
+                )
+                .await?;
             }
         },
         Some(Commands::List { what }) => match what {
@@ -306,14 +350,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref stdin_content) = stdin_input {
                     messages.push(stdin_content.clone());
                 }
-                let _ = handle_fix(
-                    messages,
-                    cli.tools,
-                    cli.remove,
-                    cli.trace,
-                    cli.agent,
-                    cli.temperature,
-                )
+                let _ = handle_fix(HeadlessRun {
+                    prompt: messages,
+                    tools: cli.tools,
+                    remove: cli.remove,
+                    trace: cli.trace,
+                    agent_name: cli.agent,
+                    temperature: cli.temperature,
+                    session_options: session_options.clone(),
+                })
                 .await;
                 return Ok(());
             }
@@ -329,18 +374,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if cli.interactive {
                     // Interactive mode: show TUI with piped content as initial prompt
-                    handle_main_with_prompt(cli.agent.clone(), stdin_content).await?;
+                    handle_main_with_prompt(
+                        cli.agent.clone(),
+                        stdin_content,
+                        session_options.clone(),
+                    )
+                    .await?;
                     return Ok(());
                 } else {
                     // Headless mode from pipe
-                    let _ = handle_fix(
-                        vec![stdin_content],
-                        cli.tools,
-                        cli.remove,
-                        cli.trace,
-                        cli.agent,
-                        cli.temperature,
-                    )
+                    let _ = handle_fix(HeadlessRun {
+                        prompt: vec![stdin_content],
+                        tools: cli.tools,
+                        remove: cli.remove,
+                        trace: cli.trace,
+                        agent_name: cli.agent,
+                        temperature: cli.temperature,
+                        session_options: session_options.clone(),
+                    })
                     .await;
                     return Ok(());
                 }
@@ -353,6 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     cli.agent.clone(),
                     None,
                     Some(tui::app::InitialModal::SessionPicker),
+                    session_options.clone(),
                 )
                 .await?;
                 return Ok(());
@@ -368,7 +420,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 cli.restore.clone()
             };
-            handle_main(cli.agent.clone(), restore_id, None).await?;
+            handle_main(cli.agent.clone(), restore_id, None, session_options.clone()).await?;
         }
     }
 
@@ -376,20 +428,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn default_config(default_config_url: Option<String>) {
-    match ShaiConfig::load() {
+    // One look at the config decides. Looking twice could see it broken and
+    // then fine, while another process writes it, and fetch a starter config
+    // over it.
+    match ShaiConfig::load_for_roles() {
         Ok(_) => return,
-        Err(e) => {
-            if let Ok(path) = ShaiConfig::config_path() {
-                if path.exists() {
-                    eprintln!(
-                        "Warning: failed to parse config at {}: {}",
-                        path.display(),
-                        e
-                    );
-                    return;
-                }
-            }
+        // A config file that is there and does not load, the legacy one
+        // included, is the user's to fix: it is neither replaced nor shadowed
+        // by a starter config. The warning says where it is broken and not
+        // what it holds: the parser's own message can quote a value, and the
+        // file holds credentials.
+        Err(shai_core::config::roles::RoleError::ConfigInvalid { path, reason }) => {
+            eprintln!("Warning: failed to load config at {}: {}", path, reason);
+            return;
         }
+        Err(_) => {}
     }
 
     let default_url = match default_config_url {
@@ -414,8 +467,10 @@ async fn handle_main(
     agent_name: Option<String>,
     restore_session_id: Option<String>,
     initial_modal: Option<tui::app::InitialModal>,
+    session_options: SessionOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new();
+    app.session_options = session_options;
     if let Some(modal) = initial_modal {
         app.initial_modal = modal;
     }
@@ -428,8 +483,10 @@ async fn handle_main(
 async fn handle_main_with_prompt(
     agent_name: Option<String>,
     prompt: String,
+    session_options: SessionOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new();
+    app.session_options = session_options;
     app.initial_prompt = Some(prompt);
     if let Err(e) = app.run(agent_name, None).await {
         eprintln!("error: {}", e)
@@ -449,14 +506,27 @@ async fn handle_config() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn handle_fix(
+/// Everything a headless run (`-p` or piped stdin) needs from the command line.
+struct HeadlessRun {
     prompt: Vec<String>,
     tools: Option<String>,
     remove: Option<String>,
     trace: bool,
     agent_name: Option<String>,
     temperature: Option<f32>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    session_options: SessionOptions,
+}
+
+async fn handle_fix(run: HeadlessRun) -> Result<(), Box<dyn std::error::Error>> {
+    let HeadlessRun {
+        prompt,
+        tools,
+        remove,
+        trace,
+        agent_name,
+        temperature,
+        session_options,
+    } = run;
     let initial_trace: Vec<ChatMessage> = prompt
         .into_iter()
         .map(|p| ChatMessage::User {
@@ -469,6 +539,7 @@ async fn handle_fix(
     if let Some(temp) = temperature {
         app.set_temperature(temp);
     }
+    app.set_session_options(session_options);
     app.run(initial_trace, tools, remove, trace, agent_name)
         .await
 }
@@ -794,5 +865,64 @@ fn list_skills() {
                 skill.source()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn session_options_only_apply_where_a_session_starts() {
+        for args in [
+            &["shai"][..],
+            &["shai", "-p", "do it"],
+            &["shai", "--latest"],
+            &["shai", "agent"],
+            &["shai", "agent", "reviewer"],
+            &["shai", "session"],
+            &["shai", "session", "latest"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(starts_session(&cli), "{args:?}");
+        }
+        for args in [
+            &["shai", "--list-tools"][..],
+            &["shai", "--version"],
+            &["shai", "agent", "list"],
+            &["shai", "auth"],
+            &["shai", "import"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(!starts_session(&cli), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn prewalk_is_off_unless_asked_for() {
+        let cli = Cli::try_parse_from(["shai"]).unwrap();
+        assert!(cli.prewalk_into.is_none());
+        let cli = Cli::try_parse_from(["shai", "-p", "do it"]).unwrap();
+        assert!(cli.prewalk_into.is_none());
+    }
+
+    #[test]
+    fn prewalk_into_takes_a_role_or_a_model_reference() {
+        let cli = Cli::try_parse_from(["shai", "--prewalk-into", "cheap"]).unwrap();
+        assert_eq!(cli.prewalk_into.as_deref(), Some("cheap"));
+
+        let cli =
+            Cli::try_parse_from(["shai", "-p", "do it", "--prewalk-into=ollama/qwen3:8b"]).unwrap();
+        assert_eq!(cli.prewalk_into.as_deref(), Some("ollama/qwen3:8b"));
+        assert_eq!(cli.prompt.as_deref(), Some("do it"));
+
+        // The flag needs a value.
+        assert!(Cli::try_parse_from(["shai", "--prewalk-into"]).is_err());
     }
 }

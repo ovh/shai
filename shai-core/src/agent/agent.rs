@@ -1,3 +1,4 @@
+use crate::agent::prewalk::{Prewalk, PrewalkSignals};
 use crate::agent::ClaimManager;
 use crate::tools::fs::operation_log::FsOperationLog;
 use crate::tools::AnyTool;
@@ -157,6 +158,8 @@ pub struct ToolContext {
     pub working_dir: Option<String>,
     pub todo_storage: Arc<crate::tools::todo::TodoStorage>,
     pub fs_operation_log: Arc<FsOperationLog>,
+    /// What tool calls have done so far that matters to a prewalk handoff
+    pub(crate) prewalk_signals: Arc<PrewalkSignals>,
     // Caching & budget
     pub tool_cache: ToolCache,
     pub tool_budget: ToolBudget,
@@ -181,6 +184,9 @@ pub struct AgentCore {
 
     /// shared tool execution context
     pub tool_ctx: ToolContext,
+
+    /// handoff to another model, while one is armed (see `agent::prewalk`)
+    pub(crate) prewalk: Option<Prewalk>,
 }
 
 pub struct AgentSocket {
@@ -230,9 +236,11 @@ impl AgentCore {
                 working_dir,
                 todo_storage,
                 fs_operation_log,
+                prewalk_signals: Arc::new(PrewalkSignals::default()),
                 tool_cache,
                 tool_budget,
             },
+            prewalk: None,
         }
     }
 
@@ -331,8 +339,14 @@ impl AgentCore {
         self.assert_socket_created();
         let mut rx = self.tool_ctx.public_event_tx.as_ref().unwrap().subscribe();
         _ = tokio::spawn(async move {
-            while let Ok(e) = rx.recv().await {
-                handler(e);
+            loop {
+                match rx.recv().await {
+                    Ok(event) => handler(event),
+                    // A handler that fell behind misses the events it was too
+                    // slow for, and goes on with the next ones.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
         self
@@ -346,8 +360,14 @@ impl AgentCore {
         self.assert_socket_created();
         let mut rx = self.tool_ctx.public_event_tx.as_ref().unwrap().subscribe();
         _ = tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                handler.handle_event(event).await;
+            loop {
+                match rx.recv().await {
+                    Ok(event) => handler.handle_event(event).await,
+                    // A handler that fell behind has missed events. That is
+                    // no reason to deliver none of the later ones.
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
         self

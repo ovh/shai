@@ -6,9 +6,12 @@ pub mod claims;
 pub mod error;
 pub mod events;
 pub mod output;
+pub mod prewalk;
 pub mod protocol;
 pub mod states;
 
+#[cfg(test)]
+pub(crate) mod scripted_llm;
 #[cfg(test)]
 mod tests;
 
@@ -22,7 +25,8 @@ pub use events::{
     closure_handler, AgentEvent, AgentEventHandler, ClosureHandler, DynEventHandler,
     InternalAgentEvent, PermissionRequest, PermissionResponse, UserRequest, UserResponse,
 };
-pub use output::StdoutEventManager;
+pub use output::{notice_text, StdoutEventManager};
+pub use prewalk::{Prewalk, PrewalkArmError};
 
 pub use crate::logging::LoggingConfig;
 pub use brain::{Brain, ThinkerContext, ThinkerDecision, ThinkerFlowControl, ToolBudgetRef};

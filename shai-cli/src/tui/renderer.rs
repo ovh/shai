@@ -20,7 +20,6 @@ impl RenderManager {
         }
     }
 
-    #[allow(dead_code)] // used by tests
     pub fn history(&self) -> &ConversationHistory {
         &self.history
     }
