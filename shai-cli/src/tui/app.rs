@@ -259,6 +259,7 @@ impl App<'_> {
             .session_manager_mut()
             .set_session_id(&session.session_id);
 
+        // Signals were reset in `try_run` before this agent was started.
         if let Some(ref agent) = self.agent {
             let _ = agent.controller.load_trace(session.trace.clone()).await;
         }
@@ -489,6 +490,12 @@ impl App<'_> {
         restore_session_id: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let agent_name_ref = agent_name.as_deref();
+        // A restored conversation starts the trigger over. Reset before the
+        // agent is armed, so it holds the new empty signals; after start the
+        // agent runs in another task and cannot be given a new Arc.
+        if restore_session_id.is_some() {
+            self.session_options.reset_prewalk_signals();
+        }
         let banner =
             self.start_agent(agent_name_ref)
                 .await

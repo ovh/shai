@@ -278,6 +278,7 @@ impl CommandRegistry {
                                     let _ = agent.controller.terminate().await;
                                 }
 
+                                app.session_options.reset_prewalk_signals();
                                 app.start_agent(agent_name.as_deref()).await.map_err(|e| {
                                     io::Error::other(format!("Failed to start agent: {}", e))
                                 })?;
@@ -360,6 +361,7 @@ impl CommandRegistry {
                         let _ = agent.controller.terminate().await;
                     }
 
+                    app.session_options.reset_prewalk_signals();
                     app.start_agent(agent_name.as_deref())
                         .await
                         .map_err(|e| io::Error::other(format!("Failed to start agent: {}", e)))?;

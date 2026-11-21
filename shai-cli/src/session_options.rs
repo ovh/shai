@@ -151,6 +151,16 @@ impl SessionOptions {
             .is_some_and(|prewalk| !prewalk.is_spent())
     }
 
+    /// Start the prewalk trigger over, keeping the one-shot latch.
+    ///
+    /// Call this before starting the agent that will load a restored
+    /// conversation, so that agent is armed with empty signals.
+    pub fn reset_prewalk_signals(&mut self) {
+        if let Some(prewalk) = self.prewalk.as_mut() {
+            prewalk.reset_signals();
+        }
+    }
+
     /// Arm `agent` with what this session was asked for.
     ///
     /// Returns a line for the user when there is something to say: when a
@@ -348,6 +358,102 @@ pub(crate) mod test_support {
         assert!(file.exists());
         assert!(prewalk.is_spent());
         assert_eq!(prewalk.has_switched(), switches);
+    }
+
+    /// A handoff target that talks to nothing.
+    pub(crate) fn dummy_prewalk() -> Prewalk {
+        Prewalk::new(shai_core::config::roles::BoundModel::new(
+            Arc::new(LlmClient::ollama("http://127.0.0.1:9/v1".to_string())),
+            "target",
+        ))
+    }
+
+    /// A saved trace that already holds a successful `todo_write` with items
+    /// and a successful `write`. Loading it must not make the trigger due.
+    pub(crate) fn planned_and_edited_trace() -> Vec<ChatMessage> {
+        let call = |name: &str, arguments: &str| ToolCall {
+            id: format!("call_{name}"),
+            r#type: "function".to_string(),
+            function: Function {
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            },
+        };
+        let assistant = |tool_calls| ChatMessage::Assistant {
+            content: None,
+            reasoning: None,
+            reasoning_content: None,
+            tool_calls: Some(tool_calls),
+            name: None,
+            audio: None,
+            refusal: None,
+        };
+        let tool = |id: &str, text: &str| ChatMessage::Tool {
+            content: openai_dive::v1::resources::chat::ChatMessageContent::Text(text.to_string()),
+            tool_call_id: id.to_string(),
+        };
+        vec![
+            ChatMessage::User {
+                content: openai_dive::v1::resources::chat::ChatMessageContent::Text(
+                    "create the file".to_string(),
+                ),
+                name: None,
+            },
+            assistant(vec![call(
+                "todo_write",
+                r#"{"todos":[{"content":"write the file","status":"in_progress"}]}"#,
+            )]),
+            tool("call_todo_write", "1 todos written"),
+            assistant(vec![call(
+                "write",
+                r#"{"files":[{"path":"/tmp/already-written.txt","content":"old"}]}"#,
+            )]),
+            tool("call_write", "wrote the file"),
+        ]
+    }
+
+    /// Arm a replay agent with `prewalk`, optionally reset signals first (as
+    /// a restore path does), load `trace`, then replay `steps`.
+    pub(crate) async fn run_restore(
+        mut prewalk: Prewalk,
+        reset: bool,
+        trace: Vec<ChatMessage>,
+        steps: Vec<(&'static str, serde_json::Value)>,
+    ) {
+        if reset {
+            prewalk.reset_signals();
+        }
+        let (tools, todos) = AgentBuilder::create_default_tools(Arc::new(FsOperationLog::new()));
+        let brain = ReplayBrain {
+            steps: steps.into(),
+            switches: true,
+        };
+        let mut agent = AgentBuilder::with_brain(Box::new(brain))
+            .tools(tools)
+            .set_todo_storage(todos)
+            .sudo()
+            .build();
+        agent.arm_prewalk(prewalk.clone()).unwrap();
+        let controller = agent.controller();
+        let run = tokio::spawn(async move { agent.run().await });
+        controller
+            .load_trace(trace)
+            .await
+            .expect("the restored trace should load");
+        controller
+            .send_user_input("continue".to_string())
+            .await
+            .expect("the next request should start");
+        controller
+            .wait_turn(Some(60_000))
+            .await
+            .expect("the replayed step should finish");
+        controller.terminate().await.expect("the agent should stop");
+        tokio::time::timeout(Duration::from_secs(60), run)
+            .await
+            .expect("the agent run should finish")
+            .expect("the agent task should join")
+            .expect("the agent run should succeed");
     }
 }
 
@@ -650,5 +756,66 @@ mod tests {
         assert!(!next.is_prewalk_armed());
         assert_eq!(options.arm(&mut agent(&[])), None);
         assert!(options.refresh_from(Ok(&cfg)).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_restored_trace_does_not_hand_off_until_the_trigger_runs_again() {
+        // A fresh process that restores a conversation which already planned
+        // and edited: the saved trace does not count. One new write is not
+        // enough; the handoff waits for a new todo list as well.
+        let prewalk = test_support::dummy_prewalk();
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("out.txt");
+        test_support::run_restore(
+            prewalk.clone(),
+            true,
+            test_support::planned_and_edited_trace(),
+            vec![(
+                "write",
+                serde_json::json!({"files": [{"path": file.to_string_lossy(), "content": "x"}]}),
+            )],
+        )
+        .await;
+        assert!(file.exists());
+        assert!(!prewalk.trigger_is_due());
+        assert!(!prewalk.is_spent());
+        assert!(!prewalk.has_switched());
+    }
+
+    #[tokio::test]
+    async fn restoring_another_conversation_does_not_keep_the_previous_signals() {
+        // Same process: signals from the conversation just left would make
+        // the next request hand off immediately. Reset starts the trigger
+        // over before the new agent is armed and the unrelated trace loaded.
+        let prewalk = test_support::dummy_prewalk();
+        prewalk.record_success("write", None);
+        prewalk.record_success("todo_write", Some(1));
+        assert!(prewalk.trigger_is_due());
+
+        let mut options = SessionOptions::with_prewalk(prewalk.clone());
+        options.reset_prewalk_signals();
+        assert!(!options.prewalk.as_ref().unwrap().trigger_is_due());
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("other.txt");
+        test_support::run_restore(
+            options.prewalk.clone().unwrap(),
+            false,
+            vec![openai_dive::v1::resources::chat::ChatMessage::User {
+                content: openai_dive::v1::resources::chat::ChatMessageContent::Text(
+                    "an unrelated conversation".to_string(),
+                ),
+                name: None,
+            }],
+            vec![(
+                "write",
+                serde_json::json!({"files": [{"path": file.to_string_lossy(), "content": "y"}]}),
+            )],
+        )
+        .await;
+        assert!(file.exists());
+        // The write ran, but there is still no todo list in this conversation.
+        assert!(!options.prewalk.as_ref().unwrap().trigger_is_due());
+        assert!(!options.prewalk.as_ref().unwrap().is_spent());
     }
 }

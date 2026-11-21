@@ -52,8 +52,11 @@ const TODO_WRITE_TOOL: &str = "todo_write";
 ///
 /// Clones also share what the session's tool calls have done towards the
 /// trigger: the agents armed with them record their calls in one place. An
-/// agent that takes over the conversation of another one hands off as soon
-/// as the session is due, without having to plan and edit again.
+/// agent that takes over the same conversation (a swapped agent, `/auth`)
+/// hands off as soon as the session is due, without having to plan and edit
+/// again. A restored conversation is different: it starts the trigger over
+/// with [`Prewalk::reset_signals`], so the saved trace and the conversation
+/// just left do not count.
 #[derive(Clone)]
 pub struct Prewalk {
     target: BoundModel,
@@ -83,6 +86,36 @@ impl Prewalk {
     /// The model the session hands off to.
     pub fn target(&self) -> &BoundModel {
         &self.target
+    }
+
+    /// Start the trigger over. The one-shot latch is unchanged, so the
+    /// handoff still happens only once in this process.
+    ///
+    /// A restored conversation calls this so it does not inherit what the
+    /// previous conversation, or this conversation's saved trace, already
+    /// did. The agent that will run the restored conversation must be armed
+    /// after this call, so it holds the new signals.
+    pub fn reset_signals(&mut self) {
+        self.signals = Arc::new(PrewalkSignals::default());
+    }
+
+    /// Whether a non-empty todo list and a successful edit have both been
+    /// recorded on these signals.
+    pub fn trigger_is_due(&self) -> bool {
+        self.signals.handoff_due()
+    }
+
+    /// Record a successful built-in tool call, as an armed agent would.
+    pub fn record_success(&self, tool_name: &str, todo_count: Option<u64>) {
+        let result = if let Some(count) = todo_count {
+            ToolResult::success_with_metadata(
+                "ok".to_string(),
+                [("todo_count".to_string(), serde_json::json!(count))].into(),
+            )
+        } else {
+            ToolResult::success("ok".to_string())
+        };
+        self.signals.observe(tool_name, &result);
     }
 
     /// The same one-shot handoff, aimed at `target`: for a target that was
@@ -1195,5 +1228,29 @@ mod tests {
         assert!(signals.handoff_due());
         signals.observe("todo_write", &ToolResult::success("ok".to_string()));
         assert!(!signals.handoff_due());
+    }
+
+    #[test]
+    fn reset_signals_starts_the_trigger_over_and_keeps_the_latch() {
+        let target = BoundModel::new(
+            std::sync::Arc::new(shai_llm::LlmClient::ollama(
+                "http://127.0.0.1:9/v1".to_string(),
+            )),
+            "target",
+        );
+        let mut prewalk = Prewalk::new(target);
+        prewalk.record_success("write", None);
+        prewalk.record_success("todo_write", Some(1));
+        assert!(prewalk.trigger_is_due());
+        assert!(!prewalk.is_spent());
+
+        let before = prewalk.clone();
+        prewalk.reset_signals();
+        assert!(!prewalk.trigger_is_due());
+        assert!(!prewalk.is_spent());
+        // The previous conversation's copy still has the old signals.
+        // The latch is shared: spending one spends the other.
+        assert!(before.trigger_is_due());
+        assert!(!before.is_spent());
     }
 }

@@ -92,6 +92,7 @@ impl App<'_> {
                             let _ = agent.controller.terminate().await;
                         }
 
+                        self.session_options.reset_prewalk_signals();
                         self.start_agent(agent_name.as_deref()).await.map_err(|e| {
                             io::Error::other(format!("Failed to start agent: {}", e))
                         })?;
