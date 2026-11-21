@@ -15,16 +15,40 @@ use serde_json::Value;
 
 const OVH_API_BASE: &str = "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1";
 
+/// Appended to rate-limit errors when no API key is configured, so users who
+/// hit the anonymous limit learn how to raise it.
+pub const ANONYMOUS_RATE_LIMIT_HINT: &str = "You are using OVHcloud AI Endpoints anonymously, \
+which is limited to 2 requests per minute. Run `shai auth` to configure an API key and raise \
+the limit to 400 requests per minute.";
+
 pub struct OvhCloudProvider {
     client: Client,
+    /// True when no API key is configured (anonymous access).
+    anonymous: bool,
 }
 
 impl OvhCloudProvider {
     pub fn new(api_key: String, base_url: Option<String>) -> Self {
+        let anonymous = api_key.trim().is_empty();
         let mut client = Client::new(api_key);
         let url = base_url.unwrap_or_else(|| OVH_API_BASE.to_string());
         client.set_base_url(&url);
-        Self { client }
+        Self { client, anonymous }
+    }
+
+    /// Convert an API error, pointing anonymous users at `shai auth` when they
+    /// hit the rate limit. The error variant is kept so retries still apply.
+    fn map_api_error(&self, error: APIError) -> LlmError {
+        match error {
+            APIError::RateLimitError(message) if self.anonymous => {
+                Box::new(APIError::RateLimitError(format!(
+                    "{}\n{}",
+                    message.trim_end(),
+                    ANONYMOUS_RATE_LIMIT_HINT
+                )))
+            }
+            other => Box::new(other),
+        }
     }
 
     /// Create OVH Cloud provider from environment variables
@@ -75,7 +99,7 @@ impl LlmProvider for OvhCloudProvider {
             .chat()
             .create(sanitized_request)
             .await
-            .map_err(|e| Box::new(e) as LlmError)?;
+            .map_err(|e| self.map_api_error(e))?;
 
         Ok(response)
     }
@@ -92,7 +116,7 @@ impl LlmProvider for OvhCloudProvider {
             .chat()
             .create_stream(sanitized_request)
             .await
-            .map_err(|e| Box::new(e) as LlmError)?;
+            .map_err(|e| self.map_api_error(e))?;
 
         let converted_stream = stream.map(|result| result.map_err(|e| Box::new(e) as LlmError));
 
@@ -123,5 +147,75 @@ impl LlmProvider for OvhCloudProvider {
                 ),
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openai_dive::v1::resources::chat::{
+        ChatCompletionParametersBuilder, ChatMessage, ChatMessageContent,
+    };
+
+    // Body returned by OVHcloud AI Endpoints when the anonymous limit is hit (#2)
+    const OVH_RATE_LIMIT_BODY: &str =
+        r#"{"message":"API rate limit exceeded","request_id":"4e7fb36eb78dcb16c3862c6ec2d85f05"}"#;
+
+    fn sample_params() -> ChatCompletionParameters {
+        ChatCompletionParametersBuilder::default()
+            .model("Qwen3-32B")
+            .messages(vec![ChatMessage::User {
+                content: ChatMessageContent::Text("hello".into()),
+                name: None,
+            }])
+            .build()
+            .expect("valid chat parameters")
+    }
+
+    async fn rate_limited_chat(api_key: &str) -> APIError {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(429)
+            .with_body(OVH_RATE_LIMIT_BODY)
+            .create_async()
+            .await;
+
+        let provider = OvhCloudProvider::new(api_key.to_string(), Some(server.url()));
+        let err = provider
+            .chat(sample_params())
+            .await
+            .expect_err("expected a rate-limit error");
+        *err.downcast::<APIError>()
+            .expect("error should stay an openai_dive APIError")
+    }
+
+    #[tokio::test]
+    async fn anonymous_rate_limit_suggests_shai_auth() {
+        match rate_limited_chat("").await {
+            APIError::RateLimitError(message) => {
+                // provider message is kept for debugging
+                assert!(message.contains("API rate limit exceeded"));
+                assert!(message.contains("shai auth"));
+            }
+            other => panic!("expected APIError::RateLimitError, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_rate_limit_is_unchanged() {
+        match rate_limited_chat("test-key").await {
+            APIError::RateLimitError(message) => {
+                assert_eq!(message, OVH_RATE_LIMIT_BODY);
+            }
+            other => panic!("expected APIError::RateLimitError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn non_rate_limit_errors_have_no_hint() {
+        let provider = OvhCloudProvider::new(String::new(), None);
+        let err = provider.map_api_error(APIError::AuthenticationError("bad key".into()));
+        assert_eq!(err.to_string(), "bad key");
     }
 }
