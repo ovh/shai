@@ -466,3 +466,40 @@ async fn test_agent_with_real_tools() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_tool_budget_cost_limit() {
+    use super::agent::ToolBudget;
+
+    // No cap: nothing is priced, unknown models are fine
+    let unlimited = ToolBudget::new(Some(100));
+    assert!(unlimited
+        .record_cost(Some("not-a-model"), 1_000_000, 1_000_000, 0)
+        .await
+        .is_ok());
+
+    let budget = ToolBudget::new(Some(100)).with_max_cost_usd(Some(1.0));
+    // gpt-4o: 100k in + 10k out is about $0.35 per call
+    assert!(budget
+        .record_cost(Some("gpt-4o"), 100_000, 10_000, 0)
+        .await
+        .is_ok());
+    assert!(budget
+        .record_cost(Some("gpt-4o"), 100_000, 10_000, 0)
+        .await
+        .is_ok());
+    assert!(budget
+        .record_cost(Some("gpt-4o"), 100_000, 10_000, 0)
+        .await
+        .is_err());
+
+    // A new turn starts from zero
+    budget.reset().await;
+    assert_eq!(*budget.cost_usd.read().await, 0.0);
+
+    // With a cap set, a model with no price stops the turn instead of counting as free
+    assert!(budget
+        .record_cost(Some("not-a-model"), 10, 10, 0)
+        .await
+        .is_err());
+}

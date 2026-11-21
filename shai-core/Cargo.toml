@@ -19,6 +19,7 @@ tree-sitter = "0.25"
 tree-sitter-tags = "0.25"
 tree-sitter-highlight = "0.25"
 streaming-iterator = "0.1"
+llm-budget = { version = "0.10.0", default-features = false }
 
 # Tree-sitter grammar crates
 tree-sitter-rust = "0.24"

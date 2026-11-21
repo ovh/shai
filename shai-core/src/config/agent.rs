@@ -69,6 +69,9 @@ pub struct CompactionConfig {
     pub max_output_chars: usize,
     #[serde(default = "default_max_tool_calls_per_turn")]
     pub max_tool_calls_per_turn: Option<usize>,
+    /// Maximum USD spent on LLM calls per turn, priced by llm-budget (None = unlimited)
+    #[serde(default)]
+    pub max_cost_usd_per_turn: Option<f64>,
     #[serde(default)]
     pub max_cached_commands: usize,
     #[serde(default = "default_max_trace_chars")]
@@ -87,6 +90,7 @@ impl Default for CompactionConfig {
             enabled: true,
             max_output_chars: 8000,
             max_tool_calls_per_turn: Some(100),
+            max_cost_usd_per_turn: None,
             max_cached_commands: 50,
             max_trace_chars: 85000,
             max_cached_reads: 100,
