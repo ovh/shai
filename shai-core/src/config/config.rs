@@ -1,11 +1,15 @@
+use super::roles::RolesConfig;
 use crate::tools::mcp::McpConfig;
 use json_comments::StripComments;
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, IgnoredAny, MapAccess, Visitor};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use shai_llm::{LlmClient, ToolCallMethod};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::{collections::HashMap, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,19 +20,107 @@ pub struct ProviderConfig {
     pub tool_method: ToolCallMethod,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ShaiConfig {
     pub providers: Vec<ProviderConfig>,
     pub selected_provider: usize,
-    #[serde(default)]
     pub mcp_configs: HashMap<String, McpConfig>,
+    /// Named secondary models, see [`crate::config::roles`].
+    pub roles: RolesConfig,
+}
+
+// Reading and writing are spelled out instead of derived for the sake of the
+// optional sections (see `super::section`): a section the file gives twice
+// has to survive loading and saving as it is, which a derived field cannot
+// do. The other keys of the object are read as the derive read them:
+// `providers` and `selected_provider` are required, `mcp_configs` is
+// optional, none of the three may be repeated, and unknown keys are ignored.
+// A config has to be a JSON object: the array of positional values that the
+// derive also happened to accept is not read.
+impl Serialize for ShaiConfig {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("providers", &self.providers)?;
+        map.serialize_entry("selected_provider", &self.selected_provider)?;
+        map.serialize_entry("mcp_configs", &self.mcp_configs)?;
+        self.roles.section().write("roles", &mut map)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ShaiConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ConfigVisitor;
+
+        /// Read the value of a key that may appear only once.
+        fn once<'de, A: MapAccess<'de>, T: Deserialize<'de>>(
+            slot: &mut Option<T>,
+            field: &'static str,
+            map: &mut A,
+        ) -> Result<(), A::Error> {
+            if slot.is_some() {
+                return Err(de::Error::duplicate_field(field));
+            }
+            *slot = Some(map.next_value()?);
+            Ok(())
+        }
+
+        impl<'de> Visitor<'de> for ConfigVisitor {
+            type Value = ShaiConfig;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a config object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<ShaiConfig, A::Error> {
+                let mut providers = None;
+                let mut selected_provider = None;
+                let mut mcp_configs = None;
+                let mut roles = RolesConfig::default();
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "providers" => once(&mut providers, "providers", &mut map)?,
+                        "selected_provider" => {
+                            once(&mut selected_provider, "selected_provider", &mut map)?
+                        }
+                        "mcp_configs" => once(&mut mcp_configs, "mcp_configs", &mut map)?,
+                        // Optional sections: every copy is kept as text.
+                        "roles" => roles.section_mut().push(map.next_value()?),
+                        _ => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                Ok(ShaiConfig {
+                    providers: providers.ok_or_else(|| de::Error::missing_field("providers"))?,
+                    selected_provider: selected_provider
+                        .ok_or_else(|| de::Error::missing_field("selected_provider"))?,
+                    mcp_configs: mcp_configs.unwrap_or_default(),
+                    roles,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(ConfigVisitor)
+    }
 }
 
 impl ShaiConfig {
     pub async fn pull_from_url(url: Url) -> Result<Self, Box<dyn std::error::Error>> {
         let response = reqwest::get(url).await?;
         let config_json = response.text().await?;
-        let config: ShaiConfig = serde_json::from_str(&config_json)?;
+        Self::from_pulled_json(&config_json)
+    }
+
+    /// Parse a config that was downloaded rather than written by the user.
+    ///
+    /// Sections that send a session's data to additional models are opt-in,
+    /// and only the user's own file may opt in: they are dropped here.
+    fn from_pulled_json(config_json: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut config: ShaiConfig = serde_json::from_str(config_json)?;
+        config.roles = RolesConfig::default();
         Ok(config)
     }
 
@@ -98,7 +190,7 @@ impl ShaiConfig {
         Ok(shai_config_dir.join("auth.config.json"))
     }
 
-    fn legacy_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    pub(crate) fn legacy_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let config_dir = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|_| {
@@ -111,23 +203,23 @@ impl ShaiConfig {
     }
 
     pub fn load() -> Result<ShaiConfig, Box<dyn std::error::Error>> {
-        let config_path = Self::config_path()?;
+        Self::load_from_paths(&Self::config_path()?, &Self::legacy_config_path()?)
+    }
 
-        if config_path.exists() {
-            let content_bytes = fs::read(config_path)?;
-            let content_stripped = StripComments::new(&content_bytes[..]);
-            let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
-            Self::validate_provider(&mut config);
-            return Ok(config);
-        }
-
-        let legacy_path = Self::legacy_config_path()?;
-        if legacy_path.exists() {
-            let content_bytes = fs::read(legacy_path)?;
-            let content_stripped = StripComments::new(&content_bytes[..]);
-            let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
-            Self::validate_provider(&mut config);
-            return Ok(config);
+    /// Load the config from `config_path`, or from `legacy_path` when the
+    /// former does not exist. A missing file is an error, not a default.
+    pub(crate) fn load_from_paths(
+        config_path: &Path,
+        legacy_path: &Path,
+    ) -> Result<ShaiConfig, Box<dyn std::error::Error>> {
+        for path in [config_path, legacy_path] {
+            if path.exists() {
+                let content_bytes = fs::read(path)?;
+                let content_stripped = StripComments::new(&content_bytes[..]);
+                let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
+                Self::validate_provider(&mut config);
+                return Ok(config);
+            }
         }
 
         Err("config file does not exist".into())
@@ -290,6 +382,7 @@ impl Default for ShaiConfig {
             }],
             selected_provider: 0,
             mcp_configs: HashMap::new(),
+            roles: RolesConfig::default(),
         }
     }
 }
@@ -320,5 +413,110 @@ impl ShaiConfig {
             .await
             .map_err(|_| "no Model available")?;
         Ok((llm, model))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_keys_are_read_and_written_as_before_roles_existed() {
+        for (json, expected) in [
+            (r#"{"selected_provider": 0}"#, "missing field `providers`"),
+            (r#"{"providers": []}"#, "missing field `selected_provider`"),
+            (
+                r#"{"providers": [], "providers": [], "selected_provider": 0}"#,
+                "duplicate field `providers`",
+            ),
+            (
+                r#"{"providers": [], "selected_provider": 0, "selected_provider": 1}"#,
+                "duplicate field `selected_provider`",
+            ),
+            (
+                r#"{"providers": [], "selected_provider": 0, "mcp_configs": {}, "mcp_configs": {}}"#,
+                "duplicate field `mcp_configs`",
+            ),
+            (
+                r#"{"providers": [], "selected_provider": "0"}"#,
+                "invalid type",
+            ),
+            (
+                r#"{"providers": [], "selected_provider": 0, "mcp_configs": null}"#,
+                "invalid type",
+            ),
+        ] {
+            let error = serde_json::from_str::<ShaiConfig>(json)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{json}: {error}");
+        }
+
+        // Unknown keys are ignored however often they appear, and
+        // `mcp_configs` is optional.
+        let config: ShaiConfig = serde_json::from_str(
+            r#"{"future": 1, "providers": [], "future": {"a": [1, 2]}, "selected_provider": 3}"#,
+        )
+        .unwrap();
+        assert!(config.providers.is_empty());
+        assert_eq!(config.selected_provider, 3);
+        assert!(config.mcp_configs.is_empty());
+
+        // Without roles, the file that is written has the keys it always had.
+        assert_eq!(
+            serde_json::to_string(&config).unwrap(),
+            r#"{"providers":[],"selected_provider":3,"mcp_configs":{}}"#
+        );
+        let null_roles: ShaiConfig =
+            serde_json::from_str(r#"{"providers": [], "selected_provider": 3, "roles": null}"#)
+                .unwrap();
+        assert_eq!(
+            serde_json::to_string(&null_roles).unwrap(),
+            serde_json::to_string(&config).unwrap()
+        );
+    }
+
+    #[test]
+    fn pulled_config_cannot_turn_roles_on() {
+        let pulled = ShaiConfig::from_pulled_json(
+            r#"{
+                "providers": [
+                    {"provider": "ollama", "env_vars": {}, "model": "llama3", "tool_method": "FunctionCall"}
+                ],
+                "selected_provider": 0,
+                "roles": {"planner": "ollama/other"}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(pulled.providers.len(), 1);
+        assert!(pulled.roles.is_unset());
+        assert!(pulled.resolve_role("planner").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn pull_from_url_drops_roles() {
+        let mut server = mockito::Server::new_async().await;
+        let served = server
+            .mock("GET", "/starter.config")
+            .with_status(200)
+            .with_body(
+                r#"{
+                    "providers": [
+                        {"provider": "ollama", "env_vars": {"OLLAMA_BASE_URL": "http://127.0.0.1:9/v1"}, "model": "llama3", "tool_method": "FunctionCall"}
+                    ],
+                    "selected_provider": 0,
+                    "roles": {"planner": "ollama/other"}
+                }"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let url = format!("{}/starter.config", server.url()).parse().unwrap();
+        let pulled = ShaiConfig::pull_from_url(url).await.unwrap();
+        served.assert_async().await;
+        assert_eq!(pulled.providers.len(), 1);
+        assert!(pulled.roles.is_unset());
+        assert!(pulled.resolve_role("planner").unwrap().is_none());
     }
 }
