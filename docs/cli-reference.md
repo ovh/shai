@@ -15,8 +15,8 @@ These flags work with most commands.
 | `--latest` | Restore the most recent session |
 | `--trace` | Dump entire trace upon completion (headless mode only) |
 | `--temperature <float>` | Set the LLM sampling temperature |
-| `--tools <list>` | Specify which tools to use (comma-separated) |
-| `--remove <list>` | Remove specific tools from the default set |
+| `--tools <list>` | Only allow these built-in tools (comma-separated, headless mode). With `--agent`, restricts the agent's tools: tools it does not have are not added, and its MCP tools are dropped |
+| `--remove <list>` | Remove specific tools (comma-separated, headless mode), also from the `--agent`'s tools |
 | `--list-tools` | List all available tools |
 | `-v`, `--version` | Show version information |
 
