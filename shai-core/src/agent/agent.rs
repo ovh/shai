@@ -101,6 +101,10 @@ pub struct ToolBudget {
     pub max_calls: Option<usize>,
     /// Soft budget threshold (max_calls / 2). Warnings and critical notices are based on this.
     pub soft_limit: Option<usize>,
+    /// USD spent on LLM calls in the current turn
+    pub cost_usd: Arc<RwLock<f64>>,
+    /// Maximum USD per turn (None = unlimited)
+    pub max_cost_usd: Option<f64>,
 }
 
 impl ToolBudget {
@@ -109,7 +113,44 @@ impl ToolBudget {
             count: Arc::new(RwLock::new(0)),
             max_calls,
             soft_limit: max_calls.map(|m| m / 2),
+            cost_usd: Arc::new(RwLock::new(0.0)),
+            max_cost_usd: None,
         }
+    }
+
+    pub fn with_max_cost_usd(mut self, max_cost_usd: Option<f64>) -> Self {
+        self.max_cost_usd = max_cost_usd;
+        self
+    }
+
+    /// Prices one LLM call with llm-budget and adds it to the turn's spend.
+    /// Returns `Err` with the reason once the turn is at or over `max_cost_usd`,
+    /// or when a cap is set and the model has no known price (fails closed).
+    pub async fn record_cost(
+        &self,
+        model: Option<&str>,
+        input_tokens: u32,
+        output_tokens: u32,
+        cached_tokens: u32,
+    ) -> Result<(), String> {
+        let Some(max) = self.max_cost_usd else {
+            return Ok(());
+        };
+        let model = model.unwrap_or("unknown");
+        let usage = llm_budget::Usage::new(input_tokens as u64, output_tokens as u64)
+            .with_cache_read(cached_tokens as u64);
+        let cost = llm_budget::PriceTable::builtin()
+            .cost_usage(model, &usage)
+            .map_err(|e| format!("cannot enforce the ${max:.2} turn cost limit: {e}"))?;
+        let mut spent = self.cost_usd.write().await;
+        *spent += cost;
+        if *spent >= max {
+            return Err(format!(
+                "turn cost ${:.4} reached the ${max:.2} limit",
+                *spent
+            ));
+        }
+        Ok(())
     }
 
     pub async fn increment(&self, n: usize) {
@@ -118,6 +159,7 @@ impl ToolBudget {
 
     pub async fn reset(&self) {
         *self.count.write().await = 0;
+        *self.cost_usd.write().await = 0.0;
     }
 
     pub async fn is_at_limit(&self) -> bool {
@@ -204,7 +246,8 @@ impl AgentCore {
     ) -> Self {
         let (internal_tx, internal_rx) = broadcast::channel(1024);
         let tool_cache = ToolCache::new(&compaction_config);
-        let tool_budget = ToolBudget::new(compaction_config.max_tool_calls_per_turn);
+        let tool_budget = ToolBudget::new(compaction_config.max_tool_calls_per_turn)
+            .with_max_cost_usd(compaction_config.max_cost_usd_per_turn);
         Self {
             session_id: session_id.clone(),
             socket: AgentSocket {

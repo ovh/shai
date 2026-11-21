@@ -56,6 +56,10 @@ impl CoderBrain {
 
 #[async_trait]
 impl Brain for CoderBrain {
+    fn model(&self) -> Option<&str> {
+        Some(&self.model)
+    }
+
     async fn next_step(
         &mut self,
         context: ThinkerContext,

@@ -115,4 +115,9 @@ pub trait Brain: Send + Sync {
         context: ThinkerContext,
         budget: ToolBudgetRef,
     ) -> Result<ThinkerDecision, AgentError>;
+
+    /// Model name used for pricing the per-turn cost limit
+    fn model(&self) -> Option<&str> {
+        None
+    }
 }

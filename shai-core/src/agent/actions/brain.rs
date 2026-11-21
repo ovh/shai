@@ -114,6 +114,25 @@ impl AgentCore {
                     cached_tokens,
                 })
                 .await;
+
+            // Stop the turn once the per-turn cost limit is reached
+            let model = self.brain.read().await.model().map(str::to_owned);
+            if let Err(reason) = self
+                .tool_ctx
+                .tool_budget
+                .record_cost(model.as_deref(), input_tokens, output_tokens, cached_tokens)
+                .await
+            {
+                for tc in tool_calls.as_deref().unwrap_or_default() {
+                    self.tool_ctx.trace.write().await.push(ChatMessage::Tool {
+                        tool_call_id: tc.id.clone(),
+                        content: ChatMessageContent::Text(format!("Not run: {reason}.")),
+                    });
+                }
+                let _ = self.emit_event(AgentEvent::Error { error: reason }).await;
+                self.set_state(InternalAgentState::Paused).await;
+                return Ok(());
+            }
         }
 
         // run tool call if any
