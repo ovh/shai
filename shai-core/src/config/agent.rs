@@ -212,8 +212,13 @@ fn default_max_trace_chars() -> usize {
 }
 
 fn default_llm_provider() -> AgentProviderConfig {
-    let shai_config = ShaiConfig::load().unwrap_or_else(|e| {
-        tracing::warn!("Failed to load config, using default: {}", e);
+    // Honour anonymous_fallback: under deny, or when the auth file is
+    // unreadable, this must not silently become the anonymous OVH default.
+    // Callers that omit `llm_provider` should have already run
+    // `ShaiConfig::primary()` (see [`AgentConfig::load`]); this remains a
+    // last line of defence for other deserializations.
+    let shai_config = ShaiConfig::primary().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load primary config, using default: {}", e);
         ShaiConfig::default()
     });
 
@@ -289,18 +294,12 @@ impl AgentConfig {
         let config_path = Self::agent_config_path(agent_name)?;
 
         if config_path.exists() {
-            let content_bytes = std::fs::read(config_path)?;
-            let content_stripped = StripComments::new(&content_bytes[..]);
-            let config: AgentConfig = serde_json::from_reader(content_stripped)?;
-            return Ok(config);
+            return Self::load_from_path(&config_path);
         }
 
         let legacy_path = Self::legacy_agent_config_path(agent_name)?;
         if legacy_path.exists() {
-            let content_bytes = std::fs::read(legacy_path)?;
-            let content_stripped = StripComments::new(&content_bytes[..]);
-            let config: AgentConfig = serde_json::from_reader(content_stripped)?;
-            return Ok(config);
+            return Self::load_from_path(&legacy_path);
         }
 
         Err(format!("Agent config '{}' does not exist", agent_name).into())
@@ -338,6 +337,19 @@ impl AgentConfig {
         agents.sort();
         agents.dedup();
         Ok(agents)
+    }
+
+    fn load_from_path(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let content_bytes = std::fs::read(path)?;
+        let content_stripped = StripComments::new(&content_bytes[..]);
+        let value: serde_json::Value = serde_json::from_reader(content_stripped)?;
+        // An omitted `llm_provider` falls back to the global auth config.
+        // Gate that fallback through `primary()` so deny, an invalid setting,
+        // or an unreadable auth file cannot become anonymous OVH.
+        if value.get("llm_provider").is_none() {
+            let _ = ShaiConfig::primary()?;
+        }
+        Ok(serde_json::from_value(value)?)
     }
 
     /// True when the named agent's config file includes an `llm_provider`

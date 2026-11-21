@@ -19,10 +19,10 @@ use shai_core::agent::LoggingConfig;
 use shai_core::config::agent::AgentConfig;
 use shai_core::config::anonymous_fallback::{
     confirm_anonymous_fallback, env_anonymous_fallback, evaluate_anonymous_fallback_gate,
-    resolve_anonymous_fallback, FallbackGate, FallbackInteraction, FallbackSituation,
-    CANCEL_EXIT_CODE, CANCEL_MESSAGE,
+    resolve_anonymous_fallback, AnonymousFallbackMode, FallbackGate, FallbackInteraction,
+    FallbackSituation, CANCEL_EXIT_CODE, CANCEL_MESSAGE,
 };
-use shai_core::config::config::ShaiConfig;
+use shai_core::config::config::{ConfigLoadError, ShaiConfig};
 use shai_core::runners::clifixer::fix::clifix;
 use shai_llm::LlmClient;
 use std::env;
@@ -195,6 +195,12 @@ enum ListTarget {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    // Install the tracing subscriber before `prepare_session` so
+    // `resolution.log()` is actually emitted when the user asked for logs.
+    // Default stays silent (no extra stderr line): least noisy of the options.
+    if env::var_os("SHAI_LOG_LEVEL").is_some() || env::var_os("SHAI_LOG_FILE").is_some() {
+        let _ = LoggingConfig::from_env().init();
+    }
     let default_url = cli.default_shai_config_url.clone();
 
     match cli.command {
@@ -437,20 +443,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn default_config(default_config_url: Option<String>) {
-    match ShaiConfig::load() {
-        Ok(_) => return,
-        Err(e) => {
-            if let Ok(path) = ShaiConfig::config_path() {
-                if path.exists() {
-                    eprintln!(
-                        "Warning: failed to parse config at {}: {}",
-                        path.display(),
-                        e
-                    );
-                    return;
-                }
-            }
+    // Env deny (or an invalid env value, which resolves to deny) must not
+    // pull the first-run URL or write auth.config.json.
+    if let Some(env_setting) = env_anonymous_fallback() {
+        if resolve_anonymous_fallback(None, Some(&env_setting)).mode == AnonymousFallbackMode::Deny
+        {
+            return;
         }
+    }
+
+    match ShaiConfig::try_load() {
+        Ok(_) => return,
+        Err(ConfigLoadError::Invalid { path, reason }) => {
+            eprintln!("Warning: failed to load config at {path}: {reason}");
+            return;
+        }
+        Err(ConfigLoadError::Missing) => {}
     }
 
     let default_url = match default_config_url {
@@ -514,16 +522,24 @@ async fn prepare_session(
     agent_name: Option<&str>,
     default_config_url: Option<String>,
 ) -> Result<(), SessionStartError> {
-    let loaded = ShaiConfig::load();
+    let loaded = match ShaiConfig::try_load() {
+        Ok(config) => Some(config),
+        Err(ConfigLoadError::Missing) => None,
+        Err(error @ ConfigLoadError::Invalid { .. }) => {
+            return Err(SessionStartError {
+                message: error.to_string(),
+                exit_code: 2,
+            });
+        }
+    };
     let config_setting = loaded
         .as_ref()
-        .ok()
         .and_then(|config| config.anonymous_fallback.as_deref());
     let env_setting = env_anonymous_fallback();
     let resolution = resolve_anonymous_fallback(config_setting, env_setting.as_deref());
     resolution.log();
 
-    let situation = fallback_situation(loaded.as_ref().ok(), agent_name);
+    let situation = fallback_situation(loaded.as_ref(), agent_name);
 
     match evaluate_anonymous_fallback_gate(resolution, situation, interaction) {
         FallbackGate::Proceed {
@@ -854,11 +870,13 @@ async fn handle_serve(
     max_sessions: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing for HTTP server logs
-    tracing_subscriber::fmt()
+    // try_init: `main` may already have installed LoggingConfig from
+    // SHAI_LOG_LEVEL / SHAI_LOG_FILE so `resolution.log()` could emit.
+    let _ = tracing_subscriber::fmt()
         .with_target(false)
         .with_level(true)
         .with_env_filter("shai_http=debug")
-        .init();
+        .try_init();
 
     println!("{}", logo_cyan());
 

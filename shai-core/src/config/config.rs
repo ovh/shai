@@ -38,8 +38,11 @@ fn deserialize_optional_fallback<'de, D>(deserializer: D) -> Result<Option<Strin
 where
     D: Deserializer<'de>,
 {
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(value.map(|v| match v {
+    // A missing key stays `None` via `#[serde(default)]`. An explicit JSON
+    // `null` is malformed: store it as the token "null" so resolution fails
+    // closed to `deny` instead of treating it as "unset, use prompt".
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(Some(match value {
         serde_json::Value::String(s) => s,
         other => other.to_string(),
     }))
@@ -132,26 +135,7 @@ impl ShaiConfig {
     }
 
     pub fn load() -> Result<ShaiConfig, Box<dyn std::error::Error>> {
-        let config_path = Self::config_path()?;
-
-        if config_path.exists() {
-            let content_bytes = fs::read(config_path)?;
-            let content_stripped = StripComments::new(&content_bytes[..]);
-            let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
-            Self::validate_provider(&mut config);
-            return Ok(config);
-        }
-
-        let legacy_path = Self::legacy_config_path()?;
-        if legacy_path.exists() {
-            let content_bytes = fs::read(legacy_path)?;
-            let content_stripped = StripComments::new(&content_bytes[..]);
-            let mut config: ShaiConfig = serde_json::from_reader(content_stripped)?;
-            Self::validate_provider(&mut config);
-            return Ok(config);
-        }
-
-        Err("config file does not exist".into())
+        Ok(Self::try_load()?)
     }
 
     fn validate_provider(&mut self) {
@@ -307,6 +291,155 @@ impl ShaiConfig {
         }
         !matches!(std::env::var("OVH_API_KEY"), Ok(value) if !value.trim().is_empty())
     }
+
+    /// Load the auth config, distinguishing a missing file from one that is
+    /// there but cannot be read or parsed.
+    pub fn try_load() -> Result<ShaiConfig, ConfigLoadError> {
+        let config_path = Self::config_path().map_err(|e| ConfigLoadError::Invalid {
+            path: "auth.config.json".to_string(),
+            reason: e.to_string(),
+        })?;
+        let legacy_path = Self::legacy_config_path().map_err(|e| ConfigLoadError::Invalid {
+            path: "auth.config".to_string(),
+            reason: e.to_string(),
+        })?;
+        Self::try_load_from(&config_path, &legacy_path)
+    }
+
+    /// [`try_load`] from the two paths a config file may occupy.
+    pub fn try_load_from(
+        config_path: &std::path::Path,
+        legacy_path: &std::path::Path,
+    ) -> Result<ShaiConfig, ConfigLoadError> {
+        for path in [config_path, legacy_path] {
+            match fs::symlink_metadata(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(ConfigLoadError::Invalid {
+                        path: path.display().to_string(),
+                        reason: format!("read error: {}", error.kind()),
+                    });
+                }
+                Ok(_) => return Self::load_from_existing_path(path),
+            }
+        }
+        Err(ConfigLoadError::Missing)
+    }
+
+    fn load_from_existing_path(path: &std::path::Path) -> Result<ShaiConfig, ConfigLoadError> {
+        let invalid = |reason: String| ConfigLoadError::Invalid {
+            path: path.display().to_string(),
+            reason,
+        };
+        let content_bytes =
+            fs::read(path).map_err(|e| invalid(format!("read error: {}", e.kind())))?;
+        let content_stripped = StripComments::new(&content_bytes[..]);
+        match serde_json::from_reader::<_, ShaiConfig>(content_stripped) {
+            Ok(mut config) => {
+                Self::validate_provider(&mut config);
+                Ok(config)
+            }
+            Err(error) => Err(invalid(describe_load_error(&error))),
+        }
+    }
+
+    /// The config the primary model runs on, honouring `anonymous_fallback`.
+    ///
+    /// A missing file falls back to the built-in default only in `prompt`
+    /// mode. `deny`, an invalid setting, or a file that exists but cannot be
+    /// read or parsed is an error, never a silent fallback to anonymous OVH.
+    pub fn primary() -> Result<ShaiConfig, PrimaryConfigError> {
+        let env_setting = crate::config::anonymous_fallback::env_anonymous_fallback();
+        Self::primary_from_with_env(Self::try_load(), env_setting.as_deref())
+    }
+
+    /// [`primary`] with an explicit environment override, for tests.
+    pub fn primary_from_with_env(
+        config: Result<ShaiConfig, ConfigLoadError>,
+        env_setting: Option<&str>,
+    ) -> Result<ShaiConfig, PrimaryConfigError> {
+        use crate::config::anonymous_fallback::{
+            deny_message, resolve_anonymous_fallback, AnonymousFallbackMode, FallbackSituation,
+        };
+
+        match config {
+            Ok(config) => {
+                let resolution =
+                    resolve_anonymous_fallback(config.anonymous_fallback.as_deref(), env_setting);
+                if let Some(message) = resolution.invalid {
+                    return Err(PrimaryConfigError::Other(message));
+                }
+                if resolution.mode == AnonymousFallbackMode::Deny
+                    && config.selected_is_anonymous_ovh()
+                {
+                    return Err(PrimaryConfigError::Other(deny_message(
+                        FallbackSituation::AnonymousOvh,
+                    )));
+                }
+                Ok(config)
+            }
+            Err(ConfigLoadError::Missing) => {
+                let resolution = resolve_anonymous_fallback(None, env_setting);
+                if let Some(message) = resolution.invalid {
+                    return Err(PrimaryConfigError::Other(message));
+                }
+                match resolution.mode {
+                    AnonymousFallbackMode::Deny => Err(PrimaryConfigError::Missing),
+                    AnonymousFallbackMode::Prompt => Ok(ShaiConfig::default()),
+                }
+            }
+            Err(ConfigLoadError::Invalid { path, reason }) => {
+                Err(PrimaryConfigError::Invalid { path, reason })
+            }
+        }
+    }
+}
+
+/// Why the auth config file could not be loaded.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigLoadError {
+    /// There is no auth config file (and no legacy file).
+    #[error("config file does not exist")]
+    Missing,
+    /// The file is there but could not be read or parsed. `reason` never
+    /// repeats a value from the file.
+    #[error("the config file {path} could not be loaded ({reason})")]
+    Invalid { path: String, reason: String },
+}
+
+/// Why [`ShaiConfig::primary`] could not load or allow a config.
+///
+/// Every variant is a refused start: front-ends map this to process exit code 2.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PrimaryConfigError {
+    /// There is no config file and `anonymous_fallback` is `deny`.
+    #[error("No config found (no 3rd-party API configured). Anonymous fallback is disabled. Run `shai auth` to configure a provider.")]
+    Missing,
+    /// The config file exists but could not be read or parsed.
+    #[error("the config file {path} could not be loaded ({reason})")]
+    Invalid { path: String, reason: String },
+    /// The setting refused startup (for example `anonymous_fallback: deny` with
+    /// anonymous OVH, or an invalid `anonymous_fallback` value).
+    #[error("{0}")]
+    Other(String),
+}
+
+/// Describe a load failure without quoting the file's contents. Serde's own
+/// message can include a value from the file (credentials, for example).
+fn describe_load_error(error: &serde_json::Error) -> String {
+    let kind = match error.classify() {
+        serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
+            "JSON syntax error"
+        }
+        serde_json::error::Category::Data => "unexpected value",
+        serde_json::error::Category::Io => "read error",
+    };
+    format!(
+        "{} at line {} column {}",
+        kind,
+        error.line(),
+        error.column()
+    )
 }
 
 /// Whether an API key is set on the provider. Only the presence of a
@@ -342,10 +475,7 @@ impl Default for ShaiConfig {
 
 impl ShaiConfig {
     pub async fn get_llm() -> Result<(LlmClient, String), Box<dyn std::error::Error>> {
-        let config = ShaiConfig::load().unwrap_or_else(|e| {
-            tracing::warn!("Failed to load config, using default: {}", e);
-            ShaiConfig::default()
-        });
+        let config = ShaiConfig::primary()?;
 
         config.set_env_vars();
 
@@ -453,5 +583,65 @@ mod tests {
     fn omit_key_when_serializing_default() {
         let json = serde_json::to_value(ShaiConfig::default()).unwrap();
         assert!(json.get("anonymous_fallback").is_none());
+    }
+
+    #[test]
+    fn explicit_null_anonymous_fallback_is_malformed_and_denies() {
+        let config: ShaiConfig = serde_json::from_str(
+            r#"{"providers":[],"selected_provider":0,"anonymous_fallback":null}"#,
+        )
+        .unwrap();
+        assert_eq!(config.anonymous_fallback.as_deref(), Some("null"));
+        let resolution = resolve_anonymous_fallback(config.anonymous_fallback.as_deref(), None);
+        assert_eq!(resolution.mode, AnonymousFallbackMode::Deny);
+        assert_eq!(resolution.source, AnonymousFallbackSource::Config);
+        assert!(resolution.invalid.is_some());
+    }
+
+    #[test]
+    fn primary_refuses_an_invalid_file_under_prompt_and_deny() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.config.json");
+        let legacy = dir.path().join("auth.config");
+        // A value in the wrong place, which serde would quote in its own message.
+        std::fs::write(
+            &path,
+            r#"{"providers":[],"selected_provider":"sk-live-SECRETSECRET"}"#,
+        )
+        .unwrap();
+
+        for env in [None, Some("prompt"), Some("deny")] {
+            let error =
+                ShaiConfig::primary_from_with_env(ShaiConfig::try_load_from(&path, &legacy), env)
+                    .unwrap_err();
+            assert!(
+                matches!(error, PrimaryConfigError::Invalid { .. }),
+                "env={env:?}: {error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains("auth.config.json"), "{message}");
+            assert!(message.contains("could not be loaded"), "{message}");
+            assert!(message.contains("unexpected value at line 1"), "{message}");
+            assert!(!message.contains("SECRET"), "{message}");
+            assert!(!message.contains("sk-live"), "{message}");
+        }
+    }
+
+    #[test]
+    fn primary_missing_file_follows_the_anonymous_fallback_setting() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.config.json");
+        let legacy = dir.path().join("auth.config");
+
+        let ok = ShaiConfig::primary_from_with_env(ShaiConfig::try_load_from(&path, &legacy), None)
+            .unwrap();
+        assert!(ok.selected_is_anonymous_ovh());
+
+        let err = ShaiConfig::primary_from_with_env(
+            ShaiConfig::try_load_from(&path, &legacy),
+            Some("deny"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PrimaryConfigError::Missing), "{err:?}");
     }
 }
