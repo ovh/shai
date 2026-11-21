@@ -33,7 +33,7 @@ The `shai` binary will be installed in `$HOME/.local/bin`
 
 ## Quick Start
 
-By default `shai` uses OVHcloud as an anonymous user meaning you will be rate limited! If you want to sign in with your account or select another provider, run:
+By default `shai` uses OVHcloud as an anonymous user meaning you will be rate limited! On first run with no auth config, the interactive TUI asks you to confirm that fallback (`Enter` continues, `n` cancels). Headless and other non-interactive runs print a warning and continue. Set `anonymous_fallback` in `auth.config.json` or the `SHAI_ANONYMOUS_FALLBACK` environment variable to `deny` to refuse anonymous fallback instead. If you want to sign in with your account or select another provider, run:
 
 ```bash
 shai auth

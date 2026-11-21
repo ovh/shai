@@ -340,6 +340,26 @@ impl AgentConfig {
         Ok(agents)
     }
 
+    /// True when the named agent's config file includes an `llm_provider`
+    /// field. An omitted field would fall back to the global auth config.
+    pub fn has_explicit_llm_provider(agent_name: &str) -> bool {
+        let path = match Self::agent_config_path(agent_name) {
+            Ok(path) if path.exists() => path,
+            _ => match Self::legacy_agent_config_path(agent_name) {
+                Ok(path) if path.exists() => path,
+                _ => return false,
+            },
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            return false;
+        };
+        let stripped = StripComments::new(&bytes[..]);
+        let Ok(value) = serde_json::from_reader::<_, serde_json::Value>(stripped) else {
+            return false;
+        };
+        value.get("llm_provider").is_some()
+    }
+
     /// Check if an agent config exists
     pub fn exists(agent_name: &str) -> bool {
         Self::agent_config_path(agent_name)

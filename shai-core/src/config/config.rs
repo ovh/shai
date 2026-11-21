@@ -1,7 +1,7 @@
 use crate::tools::mcp::McpConfig;
 use json_comments::StripComments;
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use shai_llm::{LlmClient, ToolCallMethod};
 use std::fs;
 #[cfg(unix)]
@@ -22,6 +22,27 @@ pub struct ShaiConfig {
     pub selected_provider: usize,
     #[serde(default)]
     pub mcp_configs: HashMap<String, McpConfig>,
+    /// How to handle a missing config or an anonymous OVH provider.
+    /// Unset means the built-in default (`prompt`). Stored as a raw string so
+    /// an unrecognized value can be rejected after load instead of failing
+    /// the rest of the file (or silently becoming the default).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_fallback"
+    )]
+    pub anonymous_fallback: Option<String>,
+}
+
+fn deserialize_optional_fallback<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.map(|v| match v {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }))
 }
 
 impl ShaiConfig {
@@ -271,6 +292,30 @@ impl ShaiConfig {
     pub fn has_mcp_config(&self, name: &str) -> bool {
         self.mcp_configs.contains_key(name)
     }
+
+    /// True when the selected provider is OVHcloud with no API key in the
+    /// config or in the `OVH_API_KEY` environment variable.
+    pub fn selected_is_anonymous_ovh(&self) -> bool {
+        let Some(provider) = self.get_selected_provider() else {
+            return false;
+        };
+        if provider.provider != "ovhcloud" {
+            return false;
+        }
+        if provider_has_api_key(provider) {
+            return false;
+        }
+        !matches!(std::env::var("OVH_API_KEY"), Ok(value) if !value.trim().is_empty())
+    }
+}
+
+/// Whether an API key is set on the provider. Only the presence of a
+/// non-empty `*_API_KEY` value is checked, never the value itself.
+pub fn provider_has_api_key(provider: &ProviderConfig) -> bool {
+    provider
+        .env_vars
+        .iter()
+        .any(|(name, value)| name.ends_with("_API_KEY") && !value.trim().is_empty())
 }
 
 impl Default for ShaiConfig {
@@ -290,6 +335,7 @@ impl Default for ShaiConfig {
             }],
             selected_provider: 0,
             mcp_configs: HashMap::new(),
+            anonymous_fallback: None,
         }
     }
 }
@@ -320,5 +366,92 @@ impl ShaiConfig {
             .await
             .map_err(|_| "no Model available")?;
         Ok((llm, model))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::anonymous_fallback::{
+        resolve_anonymous_fallback, AnonymousFallbackMode, AnonymousFallbackSource,
+    };
+
+    #[test]
+    fn missing_anonymous_fallback_key_is_unset() {
+        let json = r#"{
+            "providers": [],
+            "selected_provider": 0
+        }"#;
+        let config: ShaiConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.anonymous_fallback, None);
+        let resolution = resolve_anonymous_fallback(config.anonymous_fallback.as_deref(), None);
+        assert_eq!(resolution.mode, AnonymousFallbackMode::Prompt);
+        assert_eq!(resolution.source, AnonymousFallbackSource::Default);
+        assert!(resolution.invalid.is_none());
+    }
+
+    #[test]
+    fn anonymous_fallback_key_round_trip_and_invalid() {
+        let json = r#"{
+            "providers": [],
+            "selected_provider": 0,
+            "anonymous_fallback": "deny"
+        }"#;
+        let config: ShaiConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.anonymous_fallback.as_deref(), Some("deny"));
+        let out = serde_json::to_value(&config).unwrap();
+        assert_eq!(out["anonymous_fallback"], "deny");
+
+        let invalid: ShaiConfig = serde_json::from_str(
+            r#"{
+            "providers": [],
+            "selected_provider": 0,
+            "anonymous_fallback": "allow"
+        }"#,
+        )
+        .unwrap();
+        let resolution = resolve_anonymous_fallback(invalid.anonymous_fallback.as_deref(), None);
+        assert_eq!(resolution.mode, AnonymousFallbackMode::Deny);
+        assert!(resolution.invalid.is_some());
+
+        let numeric: ShaiConfig = serde_json::from_str(
+            r#"{
+            "providers": [],
+            "selected_provider": 0,
+            "anonymous_fallback": 1
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(numeric.anonymous_fallback.as_deref(), Some("1"));
+        let resolution = resolve_anonymous_fallback(numeric.anonymous_fallback.as_deref(), None);
+        assert_eq!(resolution.mode, AnonymousFallbackMode::Deny);
+        assert!(resolution.invalid.is_some());
+    }
+
+    #[test]
+    fn default_config_is_anonymous_ovh_without_key() {
+        let config = ShaiConfig::default();
+        assert!(config.selected_is_anonymous_ovh());
+        assert_eq!(config.anonymous_fallback, None);
+    }
+
+    #[test]
+    fn selected_is_anonymous_ovh_false_for_keyed_or_other_providers() {
+        let mut keyed = ShaiConfig::default();
+        keyed.providers[0]
+            .env_vars
+            .insert("OVH_API_KEY".into(), "x".into());
+        assert!(!keyed.selected_is_anonymous_ovh());
+
+        let mut other = ShaiConfig::default();
+        other.providers[0].provider = "openai".into();
+        other.providers[0].env_vars.clear();
+        assert!(!other.selected_is_anonymous_ovh());
+    }
+
+    #[test]
+    fn omit_key_when_serializing_default() {
+        let json = serde_json::to_value(ShaiConfig::default()).unwrap();
+        assert!(json.get("anonymous_fallback").is_none());
     }
 }
