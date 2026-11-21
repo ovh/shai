@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::headless::tools::ToolConfig;
 
-use super::tools::{list_all_tools, parse_tools_list, ToolName};
+use super::tools::{list_all_tools, restrict_toolbox, ToolName};
 use openai_dive::v1::resources::chat::{ChatMessage, ChatMessageContent};
 use shai_core::agent::{
     Agent, AgentBuilder, AgentError, AgentResult, Brain, LoggingConfig, StdoutEventManager,
@@ -63,12 +63,27 @@ impl AppHeadless {
 
         let agent = if let Some(agent_name) = agent_name {
             // Use custom agent from config
-            AgentBuilder::create(Some(agent_name))
+            let mut builder = AgentBuilder::create(Some(agent_name.clone()))
                 .await
-                .map_err(|e| format!("Failed to create agent: {}", e))?
-                .with_traces(initial_trace)
-                .sudo()
-                .build()
+                .map_err(|e| format!("Failed to create agent: {}", e))?;
+
+            // --tools / --remove narrow the agent's own tools, never widen them
+            if tools.is_some() || remove.is_some() {
+                let (toolbox, missing) = restrict_toolbox(
+                    std::mem::take(&mut builder.available_tools),
+                    tools.as_deref(),
+                    remove.as_deref(),
+                )?;
+                for tool in missing {
+                    eprintln!(
+                        "Warning: agent '{}' does not provide tool '{}', ignoring it",
+                        agent_name, tool
+                    );
+                }
+                builder.available_tools = toolbox;
+            }
+
+            builder.with_traces(initial_trace).sudo().build()
         } else {
             // Use default agent with provided tools
             let (llm_client, model) = ShaiConfig::get_llm().await?;
@@ -81,17 +96,7 @@ impl AppHeadless {
             // Handle tool selection if needed
             if tools.is_some() || remove.is_some() {
                 // Need custom tool configuration
-                let tools = match (tools, remove) {
-                    (Some(tools_str), _) => {
-                        let selected_tools = parse_tools_list(&tools_str)?;
-                        ToolConfig::new().add_tools(selected_tools)
-                    }
-                    (None, Some(remove_str)) => {
-                        let tools_to_remove = parse_tools_list(&remove_str)?;
-                        ToolConfig::new().remove_tools(tools_to_remove)
-                    }
-                    (None, None) => ToolConfig::new(),
-                };
+                let tools = ToolConfig::from_args(tools.as_deref(), remove.as_deref())?;
 
                 let toolbox = tools.build_toolbox();
                 let brain: Box<dyn Brain> = match self.kind {

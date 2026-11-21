@@ -69,10 +69,10 @@ struct Cli {
     /// List all available tools
     #[arg(long)]
     list_tools: bool,
-    /// Specify which tools to use (comma-separated)
+    /// Only allow these built-in tools (comma-separated). With --agent, restricts the agent's tools
     #[arg(long)]
     tools: Option<String>,
-    /// Remove specific tools from the default set (comma-separated)
+    /// Remove specific tools (comma-separated), also from the --agent's tools
     #[arg(long)]
     remove: Option<String>,
     /// Set the LLM sampling temperature (default: 0.0)
