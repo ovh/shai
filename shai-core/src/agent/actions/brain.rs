@@ -11,6 +11,10 @@ use tracing::info;
 impl AgentCore {
     /// Launch a brain task to decide next step
     pub async fn spawn_next_step(&mut self) {
+        // Every result of the previous step is in the trace and no request is
+        // in flight: the one point where the session may change model.
+        self.prewalk_if_due().await;
+
         let cancellation_token = CancellationToken::new();
         let cancel_token_clone = cancellation_token.clone();
         let trace = self.tool_ctx.trace.read().await.clone();

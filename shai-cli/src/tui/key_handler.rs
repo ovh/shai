@@ -79,6 +79,10 @@ impl App<'_> {
                         let session_id = session.session_id.clone();
                         let trace = session.trace.clone();
 
+                        let agent_name = self.agent_meta.name().map(|s| s.to_string());
+                        if !self.may_replace_agent(agent_name.as_deref()) {
+                            return Ok(());
+                        }
                         self.input.alert_msg(
                             &format!("Restoring session {}...", &session_id[..8]),
                             Duration::from_secs(2),
@@ -88,7 +92,6 @@ impl App<'_> {
                             let _ = agent.controller.terminate().await;
                         }
 
-                        let agent_name = self.agent_meta.name().map(|s| s.to_string());
                         self.start_agent(agent_name.as_deref()).await.map_err(|e| {
                             io::Error::other(format!("Failed to start agent: {}", e))
                         })?;

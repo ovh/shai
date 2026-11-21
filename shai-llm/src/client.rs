@@ -132,6 +132,14 @@ impl LlmClient {
         }
     }
 
+    /// Wrap a provider implementation.
+    ///
+    /// For providers that live outside this crate, and for tests that script
+    /// a provider in-process instead of talking to a server.
+    pub fn from_provider(provider: Box<dyn LlmProvider>) -> Self {
+        Self { provider }
+    }
+
     /// Get all available LLM clients from environment variables
     /// Returns clients in order of preference for testing
     pub fn first_from_env() -> Option<Self> {

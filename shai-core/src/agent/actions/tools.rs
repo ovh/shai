@@ -107,6 +107,9 @@ impl AgentCore {
                 }
 
                 Ok((tool, mut call)) => {
+                    // Captured now: `tool` is moved when the call is executed.
+                    let is_builtin = tool.group() == Some(crate::tools::BUILTIN_TOOL_GROUP);
+
                     // Inject agent's working_dir as default for bash tool if not specified
                     if call.tool_name == "bash" {
                         if let Some(dir) = &working_dir {
@@ -324,6 +327,12 @@ impl AgentCore {
                             content: ChatMessageContent::Text(compacted_output.clone()),
                         });
                     };
+
+                    // Only built-in tools count towards a prewalk handoff: an
+                    // MCP tool may happen to share a name with one.
+                    if is_builtin {
+                        tool_ctx.prewalk_signals.observe(&call.tool_name, &result);
+                    }
 
                     // Emit tool call finish event
                     let tool_was_denied = result.is_denied();

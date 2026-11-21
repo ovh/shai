@@ -216,6 +216,19 @@ impl Brain for CoderBrain {
             None => ThinkerDecision::agent_continue(message),
         })
     }
+
+    fn switch_model(&mut self, llm: Arc<LlmClient>, model: String) -> bool {
+        debug!(target: "brain::coder", provider = ?llm.provider_name(), model = ?model, "switching model");
+        // The prompt template and its cached rendering do not depend on the
+        // model, so the conversation continues exactly where it was.
+        self.llm = llm;
+        self.model = model;
+        true
+    }
+
+    fn can_switch_model(&self) -> bool {
+        true
+    }
 }
 
 /// Coder agent factory — returns AgentCore directly so callers can configure working_dir.

@@ -125,6 +125,24 @@ pub enum RoleError {
     #[error("{target:?} is neither a role name nor a \"<provider>/<model>\" reference")]
     InvalidTarget { target: String },
 
+    /// A setting of the config file, such as `prewalk.into`, that should name
+    /// a model and does not. The value itself is deliberately left out.
+    #[error(
+        "{setting:?} is neither a role name nor a valid \"<provider>/<model>\" reference: {reason}"
+    )]
+    InvalidSetting {
+        setting: &'static str,
+        reason: &'static str,
+    },
+
+    /// A setting of the config file that names a role which is not
+    /// configured. The value itself is deliberately left out.
+    #[error("{setting:?} names a role that is not configured (configured roles: {})", listed(.known))]
+    UnknownRoleInSetting {
+        setting: &'static str,
+        known: Vec<String>,
+    },
+
     /// A role that was asked for by name but is not configured.
     #[error("role {role:?} is not configured (configured roles: {}); to name a model directly, use \"<provider>/<model>\"", listed(.known))]
     UnknownRole { role: String, known: Vec<String> },
@@ -511,6 +529,9 @@ enum Origin<'a> {
     Role(&'a str),
     /// Given directly, by the user or by a caller: quoted, cut to size.
     Direct,
+    /// The value of another setting of the config file: the setting is
+    /// named, its value never quoted.
+    Setting(&'static str),
 }
 
 /// Say why a config file failed to load without repeating what it contains.
@@ -535,6 +556,16 @@ fn describe_load_error(error: &(dyn std::error::Error + 'static)) -> String {
 }
 
 impl ShaiConfig {
+    /// Why the user's config file cannot be loaded, if it is there and does
+    /// not load: its path and what is wrong with it, without repeating
+    /// anything the file holds. `None` when the file loads or does not exist.
+    pub fn load_problem() -> Option<(String, String)> {
+        match Self::load_for_roles() {
+            Err(RoleError::ConfigInvalid { path, reason }) => Some((path, reason)),
+            _ => None,
+        }
+    }
+
     /// Load the user's config for resolving secondary models.
     ///
     /// Unlike [`ShaiConfig::get_llm`] and [`ShaiConfig::load_or_default`], this
@@ -629,6 +660,34 @@ impl ShaiConfig {
             })
     }
 
+    /// Resolve a target read from a setting of the config file, such as
+    /// `prewalk.into`: either a role name or a `<provider>/<model>` reference.
+    ///
+    /// Works like [`ShaiConfig::resolve_model_target`], except that errors
+    /// name the setting instead of quoting its value. Like the value of a
+    /// role, it comes from the file and may be something the user meant as a
+    /// credential.
+    pub fn resolve_configured_target(
+        &self,
+        setting: &'static str,
+        target: &str,
+    ) -> Result<ResolvedModel, RoleError> {
+        if target.contains('/') {
+            return self.resolve(target, Origin::Setting(setting));
+        }
+        if !is_role_name(target) {
+            return Err(RoleError::InvalidSetting {
+                setting,
+                reason: "a role name uses lowercase letters, digits, '-' and '_'",
+            });
+        }
+        self.resolve_role(target)?
+            .ok_or_else(|| RoleError::UnknownRoleInSetting {
+                setting,
+                known: self.roles.names(),
+            })
+    }
+
     fn resolve(&self, reference: &str, origin: Origin<'_>) -> Result<ResolvedModel, RoleError> {
         let parsed = ModelRef::parse(reference).map_err(|reason| match origin {
             Origin::Role(role) => RoleError::InvalidRoleReference {
@@ -639,10 +698,12 @@ impl ShaiConfig {
                 reference: echo(reference),
                 reason,
             },
+            Origin::Setting(setting) => RoleError::InvalidSetting { setting, reason },
         })?;
         let origin = match origin {
             Origin::Role(role) => format!("role {role:?}"),
             Origin::Direct => format!("{:?}", echo(reference)),
+            Origin::Setting(setting) => format!("{setting:?}"),
         };
 
         let named: Vec<&ProviderConfig> = self
@@ -776,6 +837,7 @@ mod tests {
             selected_provider: 0,
             mcp_configs: HashMap::new(),
             roles: RolesConfig::from_pairs(roles.iter().copied()),
+            prewalk: Default::default(),
         }
     }
 

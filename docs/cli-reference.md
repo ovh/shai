@@ -15,6 +15,7 @@ These flags work with most commands.
 | `--latest` | Restore the most recent session |
 | `--trace` | Dump entire trace upon completion (headless mode only) |
 | `--temperature <float>` | Set the LLM sampling temperature |
+| `--prewalk-into <target>` | Hand the session off to another model after its first edit. `<target>` is a role name or `<provider>/<model>`; overrides `prewalk.into` from the config. See [Prewalk](configurations/auth.md#prewalk) |
 | `--tools <list>` | Specify which tools to use (comma-separated) |
 | `--remove <list>` | Remove specific tools from the default set |
 | `--list-tools` | List all available tools |
@@ -128,6 +129,9 @@ shai -a myagent -p "fix this bug"
 
 # With temperature
 shai -p "rewrite this function" --temperature 0.5
+
+# Plan on the primary model, then continue on a cheaper one after the first edit
+shai -p "add input validation to the signup form" --prewalk-into cheap
 
 # Chain commands
 echo "make me a hello world in main.py" | shai --trace | shai -p "now run it!"

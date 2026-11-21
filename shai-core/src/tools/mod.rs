@@ -14,6 +14,11 @@ pub mod types;
 mod tests_llm;
 
 pub use shai_macros::tool;
+
+/// Group of the tools compiled into shai, as the `#[tool]` macro reports it.
+/// No tool that comes from configuration can be in it (see
+/// `WrappedMcpTool::group`).
+pub const BUILTIN_TOOL_GROUP: &str = "builtin";
 pub use types::{
     AnyTool, AnyToolBox, Tool, ToolCall, ToolCapability, ToolEmptyParams, ToolError, ToolResult,
 };

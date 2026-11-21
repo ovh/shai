@@ -1,3 +1,4 @@
+use super::notice::{notice_line, notice_text};
 use super::pretty::PrettyFormatter;
 use crate::agent::{AgentEvent, AgentEventHandler};
 use async_trait::async_trait;
@@ -20,6 +21,11 @@ impl StdoutEventManager {
 #[async_trait]
 impl AgentEventHandler for StdoutEventManager {
     async fn handle_event(&self, event: AgentEvent) {
+        // Notices are exactly one line on stderr, in the style of the banner.
+        if let Some(notice) = notice_text(&event) {
+            eprintln!("{}", notice_line(&notice));
+            return;
+        }
         if let Some(formatted) = self.formatter.format_event(&event) {
             eprintln!("{}", formatted);
             let _ = io::stdout().flush();

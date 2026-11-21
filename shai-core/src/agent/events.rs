@@ -104,6 +104,8 @@ pub enum AgentEvent {
     TodoUpdated {
         todos: Vec<crate::tools::todo::TodoItem>,
     },
+    /// The session continues on another model (see `agent::prewalk`)
+    ModelSwitched { provider: String, model: String },
 }
 
 /// Types of user input that an agent can request
@@ -289,6 +291,11 @@ impl std::fmt::Debug for AgentEvent {
             AgentEvent::TodoUpdated { todos } => {
                 f.debug_struct("TodoUpdated").field("todos", todos).finish()
             }
+            AgentEvent::ModelSwitched { provider, model } => f
+                .debug_struct("ModelSwitched")
+                .field("provider", provider)
+                .field("model", model)
+                .finish(),
         }
     }
 }

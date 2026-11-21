@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 
 use super::agent_meta::AgentMeta;
 use super::agent_state::AgentState;
+use crate::session_options::SessionOptions;
 
 use super::handler::AgentHandler;
 use super::input::InputArea;
@@ -54,6 +55,11 @@ pub struct App<'a> {
     pub(crate) status_bar: StatusBar,
     pub(crate) initial_modal: InitialModal,
     pub(crate) initial_prompt: Option<String>,
+    pub(crate) session_options: SessionOptions,
+    /// Lines about the session's options that are waiting to be shown.
+    pub(crate) session_notices: Vec<String>,
+    /// Agents this session has started so far.
+    pub(crate) agents_started: u32,
     pub(crate) event_reader: Option<crossterm::event::EventStream>,
 }
 
@@ -63,10 +69,21 @@ impl App<'_> {
         agent_name: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         use shai_core::agent::builder::AgentBuilder;
+        use shai_core::agent::Agent;
         use shai_core::config::agent::AgentConfig;
-        use shai_core::config::config::ShaiConfig;
 
-        let mut agent: Box<dyn shai_core::agent::Agent> = if let Some(name) = agent_name {
+        // The agent this one replaces may have handed off without its
+        // announcement having been read. Say so before moving on.
+        self.show_unseen_switch();
+        // What the session was asked for follows the config, which is read
+        // again for every agent: a handoff still to come is aimed at what its
+        // target resolves to now, or given up if it no longer resolves.
+        if self.agents_started > 0 {
+            let notices = self.session_options.refresh();
+            self.session_notices.extend(notices);
+        }
+
+        let mut agent = if let Some(name) = agent_name {
             let config = AgentConfig::load(name)?;
             self.agent_meta.set_model(config.llm_provider.model.clone());
             self.agent_meta
@@ -76,15 +93,28 @@ impl App<'_> {
             self.agent_state
                 .mcp_manager_mut()
                 .set_servers(agent_builder.mcp_status.clone());
-            Box::new(agent_builder.build())
+            agent_builder.build()
         } else {
-            let (llm, model) = ShaiConfig::get_llm().await?;
+            // As at start-up: a config file that is there and cannot be read
+            // is not replaced by the built-in default, which would send the
+            // conversation to a provider the user did not choose.
+            // The file is loaded once, and the primary model built from that
+            // load, so it cannot break between a check and the read.
+            let config = SessionOptions::primary_config()?;
+            let (llm, model) = config.get_llm_from_config().await?;
             self.agent_meta.set_model(model.clone());
             self.agent_meta
                 .set_provider(llm.provider().name().to_string());
             self.agent_meta.set_name(None);
-            Box::new(coder(Arc::new(llm), model))
+            coder(Arc::new(llm), model)
         };
+
+        // A handoff that has not happened yet stays armed on an agent that
+        // replaces the previous one, if that agent can hand off at all. Once
+        // it has happened, no agent is armed again.
+        if let Some(notice) = self.session_options.arm(&mut agent) {
+            self.session_notices.push(notice);
+        }
 
         let banner = if let Some(name) = agent_name {
             format!(
@@ -125,8 +155,51 @@ impl App<'_> {
         self.status_bar.set_model(self.agent_meta.model());
         self.status_bar.set_provider(self.agent_meta.provider());
         self.refresh_status_bar();
+        self.agents_started += 1;
 
         Ok(banner)
+    }
+
+    /// Show the lines about the session's options that are waiting.
+    pub(crate) fn show_session_notices(&mut self) {
+        if self.session_notices.is_empty() {
+            return;
+        }
+        let stick = self.renderer.history().at_bottom();
+        for notice in std::mem::take(&mut self.session_notices) {
+            self.renderer.history_mut().add_system_text(&notice);
+        }
+        if stick {
+            self.renderer.history_mut().scroll_to_bottom();
+        }
+    }
+
+    /// Show a notice event, and follow a model switch in the display.
+    fn show_notice(&mut self, event: &AgentEvent) {
+        if let AgentEvent::ModelSwitched { provider, model } = event {
+            // Show where the conversation goes from now on.
+            self.agent_meta.set_model(model.clone());
+            self.agent_meta.set_provider(provider.clone());
+            self.status_bar.set_model(model);
+            self.status_bar.set_provider(provider);
+        }
+        if let Some(notice) = shai_core::agent::notice_text(event) {
+            let stick = self.renderer.history().at_bottom();
+            self.renderer.history_mut().add_system_text(&notice);
+            if stick {
+                self.renderer.history_mut().scroll_to_bottom();
+            }
+            self.notify(&notice, Duration::from_secs(8));
+        }
+    }
+
+    /// Announce a handoff that happened without its event reaching this
+    /// loop: events are dropped when the loop falls far behind, and with an
+    /// agent that is replaced before they are read.
+    pub(crate) fn show_unseen_switch(&mut self) {
+        if let Some(event) = self.session_options.take_unseen_switch() {
+            self.show_notice(&event);
+        }
     }
 
     async fn receive_agent_event(&mut self) -> Option<AgentEvent> {
@@ -209,10 +282,38 @@ impl App<'_> {
         Ok(())
     }
 
+    /// Whether the running agent may be replaced by one on the agent
+    /// `agent_name` (`None`: the primary model of the auth config). Not when
+    /// that would start from an auth config that is there and cannot be
+    /// read: the new agent would not start, and the session would be left
+    /// without one. The user is told why.
+    pub(crate) fn may_replace_agent(&mut self, agent_name: Option<&str>) -> bool {
+        if agent_name.is_some() {
+            return true;
+        }
+        self.may_replace_agent_given(SessionOptions::config_problem())
+    }
+
+    /// [`App::may_replace_agent`] for an agent on the auth config, given what
+    /// is wrong with that config file, if anything.
+    fn may_replace_agent_given(&mut self, config_problem: Option<String>) -> bool {
+        match config_problem {
+            Some(problem) => {
+                self.session_notices
+                    .push(format!("the agent was not replaced: {problem}"));
+                false
+            }
+            None => true,
+        }
+    }
+
     pub async fn swap_agent(
         &mut self,
         agent_name: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.may_replace_agent(agent_name) {
+            return Ok(());
+        }
         let trace = if let Some(ref agent) = self.agent {
             agent.controller.get_trace().await.ok()
         } else {
@@ -258,6 +359,18 @@ impl App<'_> {
                     }
                 }
             }
+        }
+
+        // One-shot: the handoff is over for this session. If it has been
+        // announced already (see `show_unseen_switch`), this is a repeat.
+        let repeat = match &event {
+            AgentEvent::ModelSwitched { provider, model } => {
+                !self.session_options.on_model_switched(provider, model)
+            }
+            _ => false,
+        };
+        if !repeat {
+            self.show_notice(&event);
         }
 
         if let AgentEvent::TokenUsage { .. } = &event {
@@ -316,6 +429,9 @@ impl App<'_> {
             status_bar: StatusBar::new(theme),
             initial_modal: InitialModal::None,
             initial_prompt: None,
+            session_options: SessionOptions::default(),
+            session_notices: Vec::new(),
+            agents_started: 0,
             event_reader: None,
         }
     }
@@ -402,6 +518,8 @@ impl App<'_> {
         if !banner.is_empty() {
             self.renderer.history_mut().add_text(&banner);
         }
+        // Lines about the session's options are shown by the loop below,
+        // under a restored conversation rather than above it.
 
         std::io::stdout().flush().ok();
 
@@ -436,6 +554,7 @@ impl App<'_> {
         self.resume_event_reader();
 
         while !self.ui_state.exit {
+            self.show_session_notices();
             self.draw_ui()
                 .map_err(|_| -> Box<dyn std::error::Error> { "oops... (x_x)'".into() })?;
 
@@ -444,8 +563,10 @@ impl App<'_> {
             tokio::select! {
                 agent_event = self.receive_agent_event(), if self.agent.is_some() => {
                     self.event_reader = Some(reader);
-                    if let Some(event) = agent_event {
-                        self.handle_agent_event(event).await?;
+                    match agent_event {
+                        Some(event) => self.handle_agent_event(event).await?,
+                        // Events were missed. A handoff may be among them.
+                        None => self.show_unseen_switch(),
                     }
                     reader = self.event_reader.take().unwrap_or_default();
                 }
@@ -471,5 +592,138 @@ impl App<'_> {
             self.check_permission_queue().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_options::test_support::hand_off;
+    use shai_core::agent::Prewalk;
+    use shai_core::config::roles::BoundModel;
+    use shai_llm::LlmClient;
+
+    /// A handoff to a target that is never contacted: building a client
+    /// opens no socket.
+    fn prewalk() -> Prewalk {
+        Prewalk::new(BoundModel::new(
+            Arc::new(LlmClient::ollama("http://127.0.0.1:9/v1".to_string())),
+            "qwen3:8b",
+        ))
+    }
+
+    fn switched() -> AgentEvent {
+        AgentEvent::ModelSwitched {
+            provider: "ollama".to_string(),
+            model: "qwen3:8b".to_string(),
+        }
+    }
+
+    fn app_with(prewalk: Prewalk) -> App<'static> {
+        let mut app = App::new();
+        app.agent_meta.set_model("big-model".to_string());
+        app.agent_meta.set_provider("openai".to_string());
+        app.session_options = SessionOptions::with_prewalk(prewalk);
+        app
+    }
+
+    fn switch_lines(app: &App<'_>) -> usize {
+        app.renderer
+            .history()
+            .raw_text()
+            .matches("prewalk: switched to ollama/qwen3:8b")
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_model_switch_is_shown_and_ends_the_handoff() {
+        let mut app = app_with(prewalk());
+        assert!(app.session_options.prewalk_pending());
+
+        app.handle_agent_event(switched()).await.unwrap();
+
+        // The display follows the conversation to its new destination...
+        assert_eq!(app.agent_meta.model(), "qwen3:8b");
+        assert_eq!(app.agent_meta.provider(), "ollama");
+        // ...the scrollback says so, once...
+        assert_eq!(switch_lines(&app), 1);
+        // ...and an agent started later in this session is not armed again.
+        assert!(!app.session_options.prewalk_pending());
+
+        // The same announcement arriving again is not shown twice.
+        app.handle_agent_event(switched()).await.unwrap();
+        assert_eq!(switch_lines(&app), 1);
+    }
+
+    #[tokio::test]
+    async fn other_events_leave_the_handoff_armed() {
+        let mut app = app_with(prewalk());
+
+        app.handle_agent_event(AgentEvent::TokenUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cached_tokens: 0,
+        })
+        .await
+        .unwrap();
+        app.show_unseen_switch();
+
+        assert_eq!(app.agent_meta.model(), "big-model");
+        assert!(app.session_options.prewalk_pending());
+        assert!(!app.renderer.history().raw_text().contains("prewalk"));
+    }
+
+    #[tokio::test]
+    async fn a_switch_whose_event_was_lost_is_still_shown_once() {
+        // An agent hands off, and its announcement never reaches the loop:
+        // the loop fell behind, or the agent was replaced first.
+        let handoff = prewalk();
+        let mut app = app_with(handoff.clone());
+        app.show_unseen_switch();
+        assert_eq!(switch_lines(&app), 0);
+        hand_off(&handoff, true).await;
+        assert!(handoff.has_switched());
+
+        app.show_unseen_switch();
+        assert_eq!(switch_lines(&app), 1);
+        assert_eq!(app.agent_meta.model(), "qwen3:8b");
+        assert_eq!(app.agent_meta.provider(), "ollama");
+        assert!(!app.session_options.prewalk_pending());
+
+        // Asked again, or told by the event after all: nothing more to show.
+        app.show_unseen_switch();
+        app.handle_agent_event(switched()).await.unwrap();
+        assert_eq!(switch_lines(&app), 1);
+    }
+
+    #[test]
+    fn an_agent_is_not_replaced_by_one_that_could_not_start() {
+        let mut app = App::new();
+        assert!(app.may_replace_agent_given(None));
+        assert!(app.session_notices.is_empty());
+        assert!(!app.may_replace_agent_given(Some(
+            "the config file /x/auth.config.json could not be loaded (line 3)".to_string()
+        )));
+        assert_eq!(
+            app.session_notices,
+            ["the agent was not replaced: the config file /x/auth.config.json could not be loaded (line 3)"]
+        );
+        // An agent of its own config does not depend on that file.
+        assert!(app.may_replace_agent(Some("reviewer")));
+    }
+
+    #[test]
+    fn waiting_session_notices_are_shown_and_cleared() {
+        let mut app = App::new();
+        app.show_session_notices();
+        assert!(app.renderer.history().raw_text().is_empty());
+
+        app.session_notices
+            .push("prewalk not armed: this agent cannot change model".to_string());
+        app.show_session_notices();
+        app.show_session_notices();
+        let scrollback = app.renderer.history().raw_text();
+        assert_eq!(scrollback.matches("prewalk not armed").count(), 1);
+        assert!(app.session_notices.is_empty());
     }
 }

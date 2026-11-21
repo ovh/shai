@@ -45,7 +45,9 @@ impl ToolDescription for WrappedMcpTool {
     }
 
     fn group(&self) -> Option<&str> {
-        Some(&self.mcp_name)
+        // The name of an MCP server is chosen in a config file. It must not
+        // let the server's tools pass for the ones compiled into shai.
+        (self.mcp_name != crate::tools::BUILTIN_TOOL_GROUP).then_some(self.mcp_name.as_str())
     }
 }
 
