@@ -6,7 +6,23 @@ use shai_llm::{LlmClient, ToolCallMethod};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::{collections::HashMap, path::PathBuf};
+use std::sync::Mutex;
+use std::{collections::HashMap, ffi::OsString, path::PathBuf};
+
+/// Variables written by [`ShaiConfig::set_env_vars`], with the value each one had
+/// before (`None` if it was unset), in the order they were written.
+static APPLIED_ENV_VARS: Mutex<Vec<(String, Option<OsString>)>> = Mutex::new(Vec::new());
+
+/// Undo `set_env_vars`, newest first, so a name written twice ends up with its
+/// original value.
+fn restore_env_vars(applied: &mut Vec<(String, Option<OsString>)>) {
+    for (name, previous) in applied.drain(..).rev() {
+        match previous {
+            Some(value) => std::env::set_var(&name, value),
+            None => std::env::remove_var(&name),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -176,16 +192,29 @@ impl ShaiConfig {
         }
     }
 
-    /// Set environment variables from the currently selected provider
+    /// Set environment variables from the currently selected provider.
+    ///
+    /// Variables set by a previous call are first put back to what the process
+    /// had before, so switching providers never leaves the old provider's values
+    /// (e.g. an `OLLAMA_API_KEY`) behind for the env fallback to pick up.
+    /// Variables the user exported themselves are left as they were.
     pub fn set_env_vars(&self) {
+        let mut applied = APPLIED_ENV_VARS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        restore_env_vars(&mut applied);
         if let Some(provider_config) = self.get_selected_provider() {
-            for (name, value) in &provider_config.env_vars {
+            let mut set = |name: &str, value: &str| {
+                applied.push((name.to_string(), std::env::var_os(name)));
                 std::env::set_var(name, value);
+            };
+            for (name, value) in &provider_config.env_vars {
+                set(name, value);
             }
             // Set model-specific environment variable if model is specified
-            std::env::set_var("SHAI_MODEL", &provider_config.model);
+            set("SHAI_MODEL", &provider_config.model);
             // Set provider-specific environment variable
-            std::env::set_var("SHAI_PROVIDER", &provider_config.provider);
+            set("SHAI_PROVIDER", &provider_config.provider);
         }
     }
 
@@ -320,5 +349,73 @@ impl ShaiConfig {
             .await
             .map_err(|_| "no Model available")?;
         Ok((llm, model))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with(provider: &str, env: &[(&str, &str)]) -> ShaiConfig {
+        let mut config = ShaiConfig {
+            providers: vec![],
+            selected_provider: 0,
+            mcp_configs: HashMap::new(),
+        };
+        config.add_provider(
+            provider.to_string(),
+            env.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            "test-model".to_string(),
+        );
+        config
+    }
+
+    fn undo_set_env_vars() {
+        let mut applied = APPLIED_ENV_VARS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        restore_env_vars(&mut applied);
+    }
+
+    // One test owns these variable names so parallel tests cannot race on them.
+    #[test]
+    fn switching_provider_does_not_keep_previous_provider_vars() {
+        const KEY: &str = "SHAI_TEST_STALE_PROVIDER_API_KEY";
+        const URL: &str = "SHAI_TEST_STALE_PROVIDER_BASE_URL";
+        std::env::remove_var(KEY);
+        std::env::set_var(URL, "http://exported.example.com/v1");
+
+        let keyed = config_with(
+            "ollama",
+            &[(KEY, "secret-token"), (URL, "https://ollama.com/v1")],
+        );
+        keyed.set_env_vars();
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("secret-token"));
+        assert_eq!(std::env::var(URL).as_deref(), Ok("https://ollama.com/v1"));
+        assert_eq!(std::env::var("SHAI_PROVIDER").as_deref(), Ok("ollama"));
+
+        // Switching to an anonymous config must not keep sending the old key,
+        // and a value the user exported before is back in place.
+        let anonymous = config_with("ollama", &[]);
+        anonymous.set_env_vars();
+        assert!(std::env::var_os(KEY).is_none(), "stale key left in env");
+        assert_eq!(
+            std::env::var(URL).as_deref(),
+            Ok("http://exported.example.com/v1")
+        );
+
+        // Setting the same config twice is idempotent.
+        keyed.set_env_vars();
+        keyed.set_env_vars();
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("secret-token"));
+        undo_set_env_vars();
+        assert!(std::env::var_os(KEY).is_none());
+        assert_eq!(
+            std::env::var(URL).as_deref(),
+            Ok("http://exported.example.com/v1")
+        );
+        std::env::remove_var(URL);
     }
 }
